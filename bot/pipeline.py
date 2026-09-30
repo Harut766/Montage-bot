@@ -36,9 +36,10 @@ async def ask_n8n(cfg: Config, segments: list[Segment], duration: float, target:
         "video_duration": round(duration, 2),
         "transcript": [{"start": round(s.start, 2), "end": round(s.end, 2), "text": s.text} for s in segments],
     }
+    headers = {"X-Montage-Secret": cfg.n8n_secret} if cfg.n8n_secret else {}
     timeout = aiohttp.ClientTimeout(total=300)
     async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.post(cfg.n8n_webhook_url, json=payload) as resp:
+        async with session.post(cfg.n8n_webhook_url, json=payload, headers=headers) as resp:
             resp.raise_for_status()
             data = await resp.json(content_type=None)
     if isinstance(data, list):  # n8n may wrap the response in a list

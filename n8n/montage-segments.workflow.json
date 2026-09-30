@@ -15,7 +15,8 @@
         "httpMethod": "POST",
         "path": "montage-segments",
         "responseMode": "responseNode",
-        "options": {}
+        "options": {},
+        "authentication": "headerAuth"
       }
     },
     {

@@ -14,6 +14,8 @@ class Config:
     telegram_api_url: str
     allowed_users: frozenset[int]
     n8n_webhook_url: str
+    # Sent as the X-Montage-Secret header; the n8n Webhook node checks it (Header Auth).
+    n8n_secret: str
     whisper_model: str
     whisper_device: str
     work_dir: Path
@@ -26,6 +28,7 @@ class Config:
             telegram_api_url=os.environ.get("TELEGRAM_API_URL", "").rstrip("/"),
             allowed_users=_ids(os.environ.get("ALLOWED_USERS", "")),
             n8n_webhook_url=os.environ.get("N8N_WEBHOOK_URL", ""),
+            n8n_secret=os.environ.get("N8N_SECRET", ""),
             whisper_model=os.environ.get("WHISPER_MODEL", "medium"),
             whisper_device=os.environ.get("WHISPER_DEVICE", "auto"),
             work_dir=Path(os.environ.get("WORK_DIR", "/data/work")),

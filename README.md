@@ -40,12 +40,13 @@ https://api.telegram.org/bot<BOT_TOKEN>/logOut
 
 ### 3. n8n
 1. В n8n: *Workflows → Import from File* → `n8n/montage-segments.workflow.json`.
-2. Открыть узел **Gemini** → Credential → *Create new* → **Header Auth**:
+2. Узел **Webhook** → Credential → *Create new* → **Header Auth**:
+   Name: `X-Montage-Secret`, Value: длинная случайная строка (`openssl rand -hex 24`).
+   Эту же строку впишите в `.env` как `N8N_SECRET=`.
+3. Узел **Gemini** → Credential → *Create new* → **Header Auth**:
    Name: `x-goog-api-key`, Value: ваш ключ Gemini.
-3. Включить workflow (**Active**).
-
-Бот обращается к `http://host.docker.internal:5678/webhook/montage-segments`.
-Если n8n опубликован на другом порту — поменяйте `N8N_WEBHOOK_URL` в `.env`.
+4. Включить workflow (**Active**) и вписать в `.env` его Production URL:
+   `N8N_WEBHOOK_URL=https://ваш-n8n-домен/webhook/montage-segments`.
 
 Промпт, по которому Gemini выбирает моменты, лежит в узле **Build prompt** — его можно править прямо в n8n.
 Модель задаётся в URL узла **Gemini** (по умолчанию `gemini-flash-latest`).
