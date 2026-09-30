@@ -257,6 +257,8 @@ async def worker(bot: Bot) -> None:
 
 async def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    # Leftovers of jobs interrupted by a restart; the queue lives in memory, so nothing will resume them.
+    shutil.rmtree(cfg.work_dir, ignore_errors=True)
     cfg.work_dir.mkdir(parents=True, exist_ok=True)
     session = None
     if cfg.telegram_api_url:
