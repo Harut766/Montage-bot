@@ -30,7 +30,7 @@ class RenderedClip:
     clip: Clip
 
 
-async def ask_n8n(cfg: Config, segments: list[Segment], duration: float, target: int, language: str) -> list[dict]:
+async def ask_n8n(cfg: Config, segments: list[Segment], duration: float, target: int, language: str) -> dict:
     min_len, max_len = length_bounds(target)
     payload = {
         "language": language,
@@ -48,7 +48,7 @@ async def ask_n8n(cfg: Config, segments: list[Segment], duration: float, target:
             data = await resp.json(content_type=None)
     if isinstance(data, list):  # n8n may wrap the response in a list
         data = data[0] if data else {}
-    return list(data.get("clips", []))
+    return data
 
 
 async def choose_clips(
@@ -57,12 +57,12 @@ async def choose_clips(
     if cfg.n8n_webhook_url:
         await progress("🧠 Gemini выбирает интересные моменты…")
         try:
-            raw = await ask_n8n(cfg, segments, duration, target, language)
-            clips = normalize_clips(raw, segments, duration, target)
+            data = await ask_n8n(cfg, segments, duration, target, language)
+            clips = normalize_clips(list(data.get("clips") or []), segments, duration, target)
             if clips:
                 return clips
-            log.warning("n8n returned no usable clips: %s", raw)
-            reason = "Gemini не вернул фрагменты"
+            log.warning("n8n returned no usable clips: %s", data)
+            reason = data.get("error") or "Gemini не вернул фрагменты"
         except aiohttp.ClientResponseError as e:
             log.exception("n8n request failed")
             reason = f"n8n ответил {e.status} {e.message}"
