@@ -163,8 +163,13 @@ async def process(bot: Bot, job: Job) -> None:
     status = await bot.send_message(job.chat_id, "⬇️ Загружаю видео…")
 
     async def progress(text: str) -> None:
+        # Warnings go to a separate message so the next status update does not hide them.
+        # Plain text: error messages may contain "<" and would break HTML parsing.
+        if text.startswith("⚠️"):
+            await bot.send_message(job.chat_id, text, parse_mode=None)
+            return
         try:
-            await status.edit_text(text)
+            await status.edit_text(text, parse_mode=None)
         except TelegramBadRequest:
             pass
 

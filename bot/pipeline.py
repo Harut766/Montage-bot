@@ -58,9 +58,14 @@ async def choose_clips(
             if clips:
                 return clips
             log.warning("n8n returned no usable clips: %s", raw)
-        except Exception:
+            reason = "Gemini не вернул фрагменты"
+        except aiohttp.ClientResponseError as e:
             log.exception("n8n request failed")
-        await progress("⚠️ n8n/Gemini не ответил, режу видео на равные части.")
+            reason = f"n8n ответил {e.status} {e.message}"
+        except Exception as e:
+            log.exception("n8n request failed")
+            reason = f"{type(e).__name__}: {e}"
+        await progress(f"⚠️ {reason}. Режу видео на равные части.")
     return split_evenly(segments, duration, target)
 
 
