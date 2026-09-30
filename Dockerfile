@@ -12,4 +12,5 @@ COPY fonts ./fonts
 COPY bot ./bot
 
 ENV PYTHONUNBUFFERED=1 FONTS_DIR=/app/fonts WORK_DIR=/data/work
-CMD ["python", "-m", "bot.main"]
+# YouTube regularly breaks old yt-dlp versions, so update it on every start (keeps working if offline).
+CMD ["sh", "-c", "pip install -q -U --no-cache-dir 'yt-dlp[default,deno]' || true; exec python -m bot.main"]
