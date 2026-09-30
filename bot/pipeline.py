@@ -18,6 +18,10 @@ log = logging.getLogger(__name__)
 Progress = Callable[[str], Awaitable[None]]
 
 
+class Cancelled(Exception):
+    """The user asked to stop processing (/cancel)."""
+
+
 @dataclass
 class RenderedClip:
     path: Path
@@ -70,7 +74,13 @@ async def choose_clips(
 
 
 async def run(
-    cfg: Config, src: Path, work: Path, target: int, language: str, progress: Progress
+    cfg: Config,
+    src: Path,
+    work: Path,
+    target: int,
+    language: str,
+    progress: Progress,
+    is_cancelled: Callable[[], bool] = lambda: False,
 ) -> AsyncIterator[RenderedClip]:
     info = await asyncio.to_thread(probe, src)
     layout = make_layout(info.width, info.height)
@@ -78,14 +88,20 @@ async def run(
     await progress("🎧 Расшифровываю речь…")
     audio = work / "audio.wav"
     await asyncio.to_thread(extract_audio, src, audio)
-    segments = await asyncio.to_thread(transcribe, audio, language, cfg.whisper_model, cfg.whisper_device)
+    segments = await asyncio.to_thread(
+        transcribe, audio, language, cfg.whisper_model, cfg.whisper_device, is_cancelled
+    )
     audio.unlink(missing_ok=True)
+    if is_cancelled():
+        raise Cancelled
     if not segments:
         raise RuntimeError("В видео не найдена речь")
 
     clips = await choose_clips(cfg, segments, info.duration, target, language, progress)
     total = len(clips)
     for n, clip in enumerate(clips, start=1):
+        if is_cancelled():
+            raise Cancelled
         await progress(f"🎬 Рендерю часть {n}/{total}…")
         ass = work / f"part_{n:02d}.ass"
         ass.write_text(build_ass(segments, clip.start, clip.end, layout, n, language), encoding="utf-8")

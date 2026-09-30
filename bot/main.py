@@ -11,8 +11,15 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.telegram import TelegramAPIServer
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.filters import CommandStart
-from aiogram.types import CallbackQuery, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.filters import Command, CommandStart
+from aiogram.types import (
+    BotCommand,
+    CallbackQuery,
+    FSInputFile,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
 
 from . import pipeline
 from .config import Config
@@ -32,12 +39,16 @@ class Job:
     url: str | None = None
     target: int | None = None
     language: str | None = None
+    cancelled: bool = False
 
 
 cfg = Config.from_env()
 router = Router()
 pending: dict[int, Job] = {}
 queue: asyncio.Queue[Job] = asyncio.Queue()
+# Jobs waiting in the queue and the one being processed, for /cancel and queue positions.
+waiting: list[Job] = []
+current: Job | None = None
 
 
 def _fmt(t: float) -> str:
@@ -70,8 +81,21 @@ async def no_access(message: Message) -> None:
 async def start(message: Message) -> None:
     await message.answer(
         "Привет! Пришли видео (файлом, до 2 ГБ) или ссылку на него.\n"
-        "Я нарежу его на вертикальные ролики для TikTok с субтитрами."
+        "Я нарежу его на вертикальные ролики для TikTok с субтитрами.\n\n"
+        "/cancel — отменить обработку"
     )
+
+
+@router.message(Command("cancel", "stop"))
+async def cancel(message: Message) -> None:
+    pending.pop(message.chat.id, None)
+    jobs = [j for j in [current, *waiting] if j and j.chat_id == message.chat.id and not j.cancelled]
+    for j in jobs:
+        j.cancelled = True
+    if jobs:
+        await message.answer("⛔ Отменяю. Текущий шаг доделается, дальше обработка остановится.")
+    else:
+        await message.answer("Сейчас нечего отменять.")
 
 
 async def _ask_length(message: Message, job: Job) -> None:
@@ -120,11 +144,12 @@ async def on_language(call: CallbackQuery) -> None:
         await call.answer("Сначала пришли видео", show_alert=True)
         return
     job.language = call.data.split(":")[1]
-    ahead = queue.qsize()
+    ahead = len(waiting) + (current is not None)
+    waiting.append(job)
     await queue.put(job)
     text = f"⏱ ~{job.target} сек · {LANGUAGES[job.language]}\n\n✅ Принято!"
     if ahead:
-        text += f" Перед тобой в очереди: {ahead}."
+        text += f"\n⏳ Видео в очереди: сначала закончу предыдущие ({ahead})."
     await call.message.edit_text(text)
     await call.answer()
 
@@ -185,7 +210,9 @@ async def process(bot: Bot, job: Job) -> None:
                 return
             raise
         sent = 0
-        async for r in pipeline.run(cfg, src, work, job.target, job.language, progress):
+        if job.cancelled:
+            raise pipeline.Cancelled
+        async for r in pipeline.run(cfg, src, work, job.target, job.language, progress, lambda: job.cancelled):
             caption = f"Часть {r.part}/{r.total} · {_fmt(r.clip.start)}–{_fmt(r.clip.end)}"
             if r.clip.title:
                 caption += f"\n{r.clip.title}"
@@ -202,6 +229,8 @@ async def process(bot: Bot, job: Job) -> None:
             r.path.unlink(missing_ok=True)
             sent += 1
         await progress(f"✅ Готово! Роликов: {sent}")
+    except pipeline.Cancelled:
+        await progress("⛔ Обработка отменена.")
     except Exception as e:
         log.exception("job failed")
         await progress(f"❌ Ошибка: {e}")
@@ -213,11 +242,16 @@ async def process(bot: Bot, job: Job) -> None:
 
 async def worker(bot: Bot) -> None:
     # One job at a time: transcription and rendering already use the whole machine.
+    global current
     while True:
         job = await queue.get()
+        waiting.remove(job)
+        current = job
         try:
-            await process(bot, job)
+            if not job.cancelled:
+                await process(bot, job)
         finally:
+            current = None
             queue.task_done()
 
 
@@ -230,6 +264,10 @@ async def main() -> None:
     bot = Bot(cfg.bot_token, session=session, default=DefaultBotProperties(parse_mode="HTML"))
     dp = Dispatcher()
     dp.include_routers(router, denied)
+    await bot.set_my_commands([
+        BotCommand(command="start", description="Как пользоваться"),
+        BotCommand(command="cancel", description="Отменить обработку"),
+    ])
     worker_task = asyncio.create_task(worker(bot))
     try:
         await dp.start_polling(bot)

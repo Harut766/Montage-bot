@@ -1,4 +1,5 @@
 """Speech-to-text with word-level timestamps (faster-whisper, runs locally)."""
+from collections.abc import Callable
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -34,7 +35,9 @@ def _model(name: str, device: str):
     return WhisperModel(name, device=device, compute_type=compute_type)
 
 
-def transcribe(audio: Path, language: str, model_name: str, device: str) -> list[Segment]:
+def transcribe(
+    audio: Path, language: str, model_name: str, device: str, should_stop: Callable[[], bool] = lambda: False
+) -> list[Segment]:
     model = _model(model_name, device)
     raw_segments, _ = model.transcribe(
         str(audio),
@@ -44,7 +47,10 @@ def transcribe(audio: Path, language: str, model_name: str, device: str) -> list
         beam_size=5,
     )
     segments = []
+    # Segments are decoded lazily, so checking between them lets /cancel stop a long transcription.
     for s in raw_segments:
+        if should_stop():
+            break
         words = [Word(w.start, w.end, w.word.strip()) for w in (s.words or []) if w.word.strip()]
         if words:
             segments.append(Segment(s.start, s.end, s.text.strip(), words))
