@@ -1,4 +1,4 @@
 aiogram==3.13.1
 aiohttp>=3.9,<4
 faster-whisper==1.1.1
-yt-dlp>=2025.1.1
+yt-dlp[default,deno]>=2026.8.19
