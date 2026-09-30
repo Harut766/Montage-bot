@@ -1,9 +1,11 @@
 #!/bin/sh
 # Sends a tiny transcript to the n8n webhook from .env and prints the answer.
-# Usage: sh scripts/test-n8n.sh
+# Usage: sh scripts/test-n8n.sh        -> Production URL (workflow must be published)
+#        sh scripts/test-n8n.sh test   -> Test URL (click "Listen for test event" in n8n first)
 cd "$(dirname "$0")/.." || exit 1
 
 URL=$(grep '^N8N_WEBHOOK_URL=' .env | cut -d= -f2-)
+[ "$1" = "test" ] && URL=$(printf %s "$URL" | sed 's#/webhook/#/webhook-test/#')
 SECRET=$(grep '^N8N_SECRET=' .env | cut -d= -f2- | tr -d '\r\n')
 
 echo "Адрес: $URL"
