@@ -49,7 +49,7 @@ https://api.telegram.org/bot<BOT_TOKEN>/logOut
    `N8N_WEBHOOK_URL=https://ваш-n8n-домен/webhook/montage-segments`.
 
 Промпт, по которому Gemini выбирает моменты, лежит в узле **Build prompt** — его можно править прямо в n8n.
-Модель задаётся в URL узла **Gemini** (`gemini-3.6-flash`); если она не ответит, запрос уйдёт в **Gemini (fallback)** (`gemini-3.5-flash-lite`).
+Модель задаётся в URL узла **Gemini** (`gemini-3.5-flash-lite`); если она не ответит, запрос уйдёт в **Gemini (fallback)** (`gemini-3.6-flash`).
 
 ### 4. Запуск
 ```bash
