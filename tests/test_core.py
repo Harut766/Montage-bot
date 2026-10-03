@@ -83,3 +83,25 @@ def test_render_end_to_end(tmp_path):
     res = probe(out)
     assert (res.width, res.height) == (1080, 1920)
     assert 11.5 <= res.duration <= 12.5
+
+
+def test_sweep_tg_storage_keeps_db_and_fresh_files(tmp_path):
+    import os
+    import time
+
+    from bot.cleanup import sweep_tg_storage
+
+    bot_dir = tmp_path / "123:token"
+    (bot_dir / "videos").mkdir(parents=True)
+    old_video = bot_dir / "videos" / "file_1.mp4"
+    new_video = bot_dir / "videos" / "file_2.mp4"
+    db = bot_dir / "td.binlog"
+    for f in (old_video, new_video, db):
+        f.write_bytes(b"x")
+    old = time.time() - 10 * 3600
+    os.utime(old_video, (old, old))
+    os.utime(db, (old, old))
+
+    assert sweep_tg_storage(tmp_path, 6) == 1
+    assert not old_video.exists()
+    assert new_video.exists() and db.exists()

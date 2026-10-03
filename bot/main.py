@@ -22,6 +22,7 @@ from aiogram.types import (
 )
 
 from . import pipeline
+from .cleanup import sweep_tg_storage
 from .config import Config
 
 log = logging.getLogger(__name__)
@@ -30,6 +31,9 @@ URL_RE = re.compile(r"https?://\S+")
 LENGTHS = (60, 120, 180)
 LANGUAGES = {"ru": "🇷🇺 Русский", "en": "🇬🇧 English"}
 UPLOAD_TIMEOUT = 900
+SWEEP_EVERY = 3600
+# Older than any job can run, so a file still being processed is never removed.
+SWEEP_MAX_AGE_HOURS = 6
 
 
 @dataclass
@@ -255,6 +259,12 @@ async def worker(bot: Bot) -> None:
             queue.task_done()
 
 
+async def janitor() -> None:
+    while True:
+        await asyncio.to_thread(sweep_tg_storage, cfg.tg_storage_dir, SWEEP_MAX_AGE_HOURS)
+        await asyncio.sleep(SWEEP_EVERY)
+
+
 async def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     # Leftovers of jobs interrupted by a restart; the queue lives in memory, so nothing will resume them.
@@ -270,11 +280,12 @@ async def main() -> None:
         BotCommand(command="start", description="Как пользоваться"),
         BotCommand(command="cancel", description="Отменить обработку"),
     ])
-    worker_task = asyncio.create_task(worker(bot))
+    tasks = [asyncio.create_task(worker(bot)), asyncio.create_task(janitor())]
     try:
         await dp.start_polling(bot)
     finally:
-        worker_task.cancel()
+        for t in tasks:
+            t.cancel()
 
 
 if __name__ == "__main__":
