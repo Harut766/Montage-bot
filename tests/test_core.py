@@ -105,3 +105,57 @@ def test_sweep_tg_storage_keeps_db_and_fresh_files(tmp_path):
     assert sweep_tg_storage(tmp_path, 6) == 1
     assert not old_video.exists()
     assert new_video.exists() and db.exists()
+
+
+def test_gemini_prompt_and_parse():
+    import json
+
+    import pytest
+
+    from bot.gemini import GeminiError, build_prompt, parse_response
+
+    prompt = build_prompt(fake_segments(600), 600, 120, "ru")
+    assert "96-150 seconds" in prompt and "from 1 to 5 fragments" in prompt and "[0.0-5.0]" in prompt
+
+    ok = {"candidates": [{"content": {"parts": [{"text": json.dumps({"clips": [{"start": 1, "end": 2, "title": "t"}]})}]}}]}
+    assert parse_response(ok) == [{"start": 1, "end": 2, "title": "t"}]
+    with pytest.raises(GeminiError, match="SAFETY"):
+        parse_response({"promptFeedback": {"blockReason": "SAFETY"}})
+
+
+def test_gemini_falls_back_to_next_model(monkeypatch):
+    import asyncio
+    import json
+
+    from aiohttp import web
+
+    from bot import gemini
+
+    calls = []
+
+    async def handler(request):
+        model = request.match_info["model"]
+        calls.append(model)
+        if model == "busy":
+            return web.json_response({"error": {"message": "high demand"}}, status=503)
+        text = json.dumps({"clips": [{"start": 0, "end": 60, "title": "ok"}]})
+        return web.json_response({"candidates": [{"content": {"parts": [{"text": text}]}}]})
+
+    async def scenario():
+        app = web.Application()
+        app.router.add_post("/v1beta/models/{model}:generateContent", handler)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, "127.0.0.1", 0)
+        await site.start()
+        port = site._server.sockets[0].getsockname()[1]
+        monkeypatch.setattr(gemini, "API_URL", f"http://127.0.0.1:{port}/v1beta/models/{{model}}:generateContent")
+        monkeypatch.setattr(gemini, "RETRY_DELAY", 0)
+        try:
+            return await gemini.choose_fragments("key", ["busy", "good"], fake_segments(120), 120, 60, "ru")
+        finally:
+            await runner.cleanup()
+
+    clips = asyncio.run(scenario())
+    assert clips[0]["title"] == "ok"
+    assert calls == ["busy", "busy", "good"]

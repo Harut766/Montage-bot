@@ -5,10 +5,9 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-import aiohttp
-
 from .clips import Clip, length_bounds, normalize_clips, split_evenly
 from .config import Config
+from .gemini import GeminiError, choose_fragments
 from .render import extract_audio, probe, render_clip
 from .subtitles import build_ass, make_layout
 from .transcribe import Segment, transcribe
@@ -30,44 +29,22 @@ class RenderedClip:
     clip: Clip
 
 
-async def ask_n8n(cfg: Config, segments: list[Segment], duration: float, target: int, language: str) -> dict:
-    min_len, max_len = length_bounds(target)
-    payload = {
-        "language": language,
-        "target_seconds": target,
-        "min_seconds": round(min_len),
-        "max_seconds": round(max_len),
-        "video_duration": round(duration, 2),
-        "transcript": [{"start": round(s.start, 2), "end": round(s.end, 2), "text": s.text} for s in segments],
-    }
-    headers = {"X-Montage-Secret": cfg.n8n_secret} if cfg.n8n_secret else {}
-    timeout = aiohttp.ClientTimeout(total=300)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.post(cfg.n8n_webhook_url, json=payload, headers=headers) as resp:
-            resp.raise_for_status()
-            data = await resp.json(content_type=None)
-    if isinstance(data, list):  # n8n may wrap the response in a list
-        data = data[0] if data else {}
-    return data
-
-
 async def choose_clips(
     cfg: Config, segments: list[Segment], duration: float, target: int, language: str, progress: Progress
 ) -> list[Clip]:
-    if cfg.n8n_webhook_url:
+    if cfg.gemini_api_key:
         await progress("🧠 Gemini выбирает интересные моменты…")
         try:
-            data = await ask_n8n(cfg, segments, duration, target, language)
-            clips = normalize_clips(list(data.get("clips") or []), segments, duration, target)
+            raw = await choose_fragments(cfg.gemini_api_key, cfg.gemini_models, segments, duration, target, language)
+            clips = normalize_clips(raw, segments, duration, target)
             if clips:
                 return clips
-            log.warning("n8n returned no usable clips: %s", data)
-            reason = data.get("error") or "Gemini не вернул фрагменты"
-        except aiohttp.ClientResponseError as e:
-            log.exception("n8n request failed")
-            reason = f"n8n ответил {e.status} {e.message}"
+            log.warning("Gemini returned no usable clips: %s", raw)
+            reason = "Gemini не вернул фрагменты"
+        except GeminiError as e:
+            reason = str(e)
         except Exception as e:
-            log.exception("n8n request failed")
+            log.exception("Gemini request failed")
             reason = f"{type(e).__name__}: {e}"
         await progress(f"⚠️ {reason}. Режу видео на равные части.")
     return split_evenly(segments, duration, target)

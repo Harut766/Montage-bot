@@ -30,9 +30,6 @@ services:
       - tg-api-data:/var/lib/telegram-bot-api
       - work:/data
       - whisper-models:/root/.cache/huggingface
-    extra_hosts:
-      # n8n runs in its own Docker container and publishes port 5678 on the host.
-      - "host.docker.internal:host-gateway"
     depends_on:
       - telegram-bot-api
 

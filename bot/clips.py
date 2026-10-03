@@ -1,4 +1,4 @@
-"""Choosing clip boundaries: clean up what Gemini (via n8n) returns, or split evenly as a fallback."""
+"""Choosing clip boundaries: clean up what Gemini returns, or split evenly as a fallback."""
 from dataclasses import dataclass
 
 from .transcribe import Segment
@@ -75,7 +75,7 @@ def normalize_clips(raw: list[dict], segments: list[Segment], duration: float, t
 
 
 def split_evenly(segments: list[Segment], duration: float, target: int) -> list[Clip]:
-    """Fallback when n8n is unavailable: consecutive parts of ~target seconds, cut between phrases."""
+    """Fallback when Gemini is unavailable: consecutive parts of ~target seconds, cut between phrases."""
     if not segments:
         return []
     min_len, max_len = length_bounds(target)
