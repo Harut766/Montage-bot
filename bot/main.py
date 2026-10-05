@@ -163,7 +163,7 @@ async def on_language(call: CallbackQuery) -> None:
 async def fetch_source(bot: Bot, job: Job, work: Path) -> tuple[Path, bool]:
     """Returns the source path and whether it lives in the Bot API server storage (to delete afterwards)."""
     if job.url:
-        return await asyncio.to_thread(download_url, job.url, work), False
+        return await asyncio.to_thread(download_url, job.url, work, cfg.cookies_file), False
     file = await bot.get_file(job.file_id)
     local = Path(file.file_path)
     if cfg.telegram_api_url and local.is_absolute() and local.exists():
@@ -173,7 +173,7 @@ async def fetch_source(bot: Bot, job: Job, work: Path) -> tuple[Path, bool]:
     return dst, False
 
 
-def download_url(url: str, work: Path) -> Path:
+def download_url(url: str, work: Path, cookies_file: Path) -> Path:
     import yt_dlp
 
     opts = {
@@ -183,6 +183,9 @@ def download_url(url: str, work: Path) -> Path:
         "quiet": True,
         "noplaylist": True,
     }
+    # Lets YouTube links that demand "sign in to confirm you're not a bot" download as a logged-in user.
+    if cookies_file.is_file():
+        opts["cookiefile"] = str(cookies_file)
     with yt_dlp.YoutubeDL(opts) as ydl:
         ydl.download([url])
     return next(work.glob("source.*"))

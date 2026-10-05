@@ -50,6 +50,16 @@ docker compose logs -f bot
 
 При первой расшифровке скачается модель Whisper (~1.5 ГБ для `medium`), дальше она берётся из кэша.
 
+## Куки YouTube (если ссылка требует входа)
+
+Некоторые видео YouTube качаются только у залогиненного пользователя (ошибка «Sign in to confirm you're not a bot`).
+Экспортируйте куки YouTube в файл формата Netscape (расширение браузера «Get cookies.txt LOCALLY») и положите его в бота:
+```bash
+docker compose cp cookies.txt bot:/data/cookies.txt
+docker compose restart bot
+```
+Куки живут в volume и переживают перезапуски. Без файла такие ссылки не скачаются — присылайте видео файлом.
+
 ## Настройки (`.env`)
 
 | Переменная | Что делает |
