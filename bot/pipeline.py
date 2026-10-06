@@ -5,7 +5,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from .clips import Clip, length_bounds, normalize_clips, split_evenly
+from .clips import Clip, length_bounds, normalize_clips, split_by_time, split_evenly
 from .config import Config
 from .gemini import GeminiError, choose_fragments
 from .render import extract_audio, probe, render_clip
@@ -62,26 +62,34 @@ async def run(
     info = await asyncio.to_thread(probe, src)
     layout = make_layout(info.width, info.height)
 
-    await progress("🎧 Расшифровываю речь…")
-    audio = work / "audio.wav"
-    await asyncio.to_thread(extract_audio, src, audio)
-    segments = await asyncio.to_thread(
-        transcribe, audio, language, cfg.whisper_model, cfg.whisper_device, is_cancelled
-    )
-    audio.unlink(missing_ok=True)
-    if is_cancelled():
-        raise Cancelled
-    if not segments:
-        raise RuntimeError("В видео не найдена речь")
+    # "cut" mode: no speech-to-text, no subtitles — just fixed parts with a "Часть N" label.
+    cut_only = language == "cut"
+    if cut_only:
+        segments: list[Segment] = []
+        clips = split_by_time(info.duration, target)
+        label_lang = "ru"
+    else:
+        await progress("🎧 Расшифровываю речь…")
+        audio = work / "audio.wav"
+        await asyncio.to_thread(extract_audio, src, audio)
+        segments = await asyncio.to_thread(
+            transcribe, audio, language, cfg.whisper_model, cfg.whisper_device, is_cancelled
+        )
+        audio.unlink(missing_ok=True)
+        if is_cancelled():
+            raise Cancelled
+        if not segments:
+            raise RuntimeError("В видео не найдена речь")
+        clips = await choose_clips(cfg, segments, info.duration, target, language, progress)
+        label_lang = language
 
-    clips = await choose_clips(cfg, segments, info.duration, target, language, progress)
     total = len(clips)
     for n, clip in enumerate(clips, start=1):
         if is_cancelled():
             raise Cancelled
         await progress(f"🎬 Рендерю часть {n}/{total}…")
         ass = work / f"part_{n:02d}.ass"
-        ass.write_text(build_ass(segments, clip.start, clip.end, layout, n, language), encoding="utf-8")
+        ass.write_text(build_ass(segments, clip.start, clip.end, layout, n, label_lang), encoding="utf-8")
         out = work / f"part_{n:02d}.mp4"
         await asyncio.to_thread(render_clip, src, clip.start, clip.end, ass, layout, cfg.fonts_dir, out)
         yield RenderedClip(out, n, total, clip)

@@ -29,7 +29,7 @@ log = logging.getLogger(__name__)
 
 URL_RE = re.compile(r"https?://\S+")
 LENGTHS = (60, 120, 180)
-LANGUAGES = {"ru": "🇷🇺 Русский", "en": "🇬🇧 English"}
+LANGUAGES = {"ru": "🇷🇺 Русский", "en": "🇬🇧 English", "cut": "✂️ Без субтитров"}
 UPLOAD_TIMEOUT = 900
 SWEEP_EVERY = 3600
 # Older than any job can run, so a file still being processed is never removed.
@@ -135,8 +135,11 @@ async def on_length(call: CallbackQuery) -> None:
         return
     job.target = int(call.data.split(":")[1])
     await call.message.edit_text(
-        f"⏱ Длина: ~{job.target} сек\n\n🗣 На каком языке говорят в видео?",
-        reply_markup=_kb([[(title, f"lang:{code}") for code, title in LANGUAGES.items()]]),
+        f"⏱ Длина: ~{job.target} сек\n\n🗣 Язык субтитров (или просто нарезать)?",
+        reply_markup=_kb([
+            [("🇷🇺 Русский", "lang:ru"), ("🇬🇧 English", "lang:en")],
+            [("✂️ Просто нарезать, без субтитров", "lang:cut")],
+        ]),
     )
     await call.answer()
 

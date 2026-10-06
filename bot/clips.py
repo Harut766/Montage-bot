@@ -98,3 +98,18 @@ def split_evenly(segments: list[Segment], duration: float, target: int) -> list[
         start, end = _pad(g[0].start, g[-1].end, duration)
         clips.append(Clip(start, end))
     return clips
+
+
+def split_by_time(duration: float, target: int) -> list[Clip]:
+    """Cut mode: fixed parts of exactly `target` seconds, no transcript needed."""
+    clips: list[Clip] = []
+    start = 0.0
+    while start < duration - 0.5:
+        end = min(start + target, duration)
+        clips.append(Clip(start, end))
+        start = end
+    # Fold a tiny trailing part into the previous one.
+    if len(clips) > 1 and clips[-1].duration < min(target * 0.3, 10):
+        clips[-2].end = clips[-1].end
+        clips.pop()
+    return clips
