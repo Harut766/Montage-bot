@@ -54,17 +54,19 @@ async def run(
     cfg: Config,
     src: Path,
     work: Path,
-    target: int,
+    mode: str,
+    target: int | None,
     language: str,
     progress: Progress,
     is_cancelled: Callable[[], bool] = lambda: False,
 ) -> AsyncIterator[RenderedClip]:
+    """mode: 'clips' (Gemini moments + subtitles), 'cut' (even split, no subtitles),
+    'full' (whole video + subtitles, no cutting)."""
     info = await asyncio.to_thread(probe, src)
     layout = make_layout(info.width, info.height)
 
-    # "cut" mode: no speech-to-text, no subtitles — just fixed parts with a "Часть N" label.
-    cut_only = language == "cut"
-    if cut_only:
+    if mode == "cut":
+        # No speech-to-text, no subtitles — just fixed parts with a "Часть N" label.
         segments: list[Segment] = []
         clips = split_by_time(info.duration, target)
         label_lang = "ru"
@@ -80,16 +82,24 @@ async def run(
             raise Cancelled
         if not segments:
             raise RuntimeError("В видео не найдена речь")
-        clips = await choose_clips(cfg, segments, info.duration, target, language, progress)
         label_lang = language
+        if mode == "full":
+            # Subtitles over the whole video, one file, no splitting and no "Часть N".
+            clips = [Clip(0.0, info.duration)]
+        else:
+            clips = await choose_clips(cfg, segments, info.duration, target, language, progress)
 
     total = len(clips)
+    show_label = mode != "full"
     for n, clip in enumerate(clips, start=1):
         if is_cancelled():
             raise Cancelled
-        await progress(f"🎬 Рендерю часть {n}/{total}…")
+        step = "🎬 Рендерю видео…" if mode == "full" else f"🎬 Рендерю часть {n}/{total}…"
+        await progress(step)
         ass = work / f"part_{n:02d}.ass"
-        ass.write_text(build_ass(segments, clip.start, clip.end, layout, n, label_lang), encoding="utf-8")
+        ass.write_text(
+            build_ass(segments, clip.start, clip.end, layout, n, label_lang, show_label), encoding="utf-8"
+        )
         out = work / f"part_{n:02d}.mp4"
         await asyncio.to_thread(render_clip, src, clip.start, clip.end, ass, layout, cfg.fonts_dir, out)
         yield RenderedClip(out, n, total, clip)

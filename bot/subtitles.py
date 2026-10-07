@@ -81,6 +81,7 @@ def build_ass(
     layout: Layout,
     part: int,
     language: str,
+    show_part_label: bool = True,
 ) -> str:
     words = [w for s in segments for w in s.words if w.end > clip_start and w.start < clip_end]
     groups = group_words(words)
@@ -107,8 +108,9 @@ def build_ass(
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
     ]
 
-    label = PART_LABEL.get(language, PART_LABEL["en"]).format(n=part)
-    lines.append(f"Dialogue: 1,{_ts(0)},{_ts(clip_len)},Part,,0,0,0,,{{\\pos(540,{layout.label_y})}}{label}")
+    if show_part_label:
+        label = PART_LABEL.get(language, PART_LABEL["en"]).format(n=part)
+        lines.append(f"Dialogue: 1,{_ts(0)},{_ts(clip_len)},Part,,0,0,0,,{{\\pos(540,{layout.label_y})}}{label}")
 
     for k, group in enumerate(groups):
         start = max(group[0].start - clip_start, 0.0)

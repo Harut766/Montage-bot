@@ -29,11 +29,17 @@ log = logging.getLogger(__name__)
 
 URL_RE = re.compile(r"https?://\S+")
 LENGTHS = (60, 120, 180)
-LANGUAGES = {"ru": "🇷🇺 Русский", "en": "🇬🇧 English", "cut": "✂️ Без субтитров"}
 UPLOAD_TIMEOUT = 900
 SWEEP_EVERY = 3600
 # Older than any job can run, so a file still being processed is never removed.
 SWEEP_MAX_AGE_HOURS = 6
+
+
+MODES = {
+    "clips": "✨ Нарезать на лучшие моменты (с субтитрами)",
+    "full": "📝 Только субтитры, не резать",
+    "cut": "✂️ Просто нарезать, без субтитров",
+}
 
 
 @dataclass
@@ -41,6 +47,7 @@ class Job:
     chat_id: int
     file_id: str | None = None
     url: str | None = None
+    mode: str | None = None
     target: int | None = None
     language: str | None = None
     cancelled: bool = False
@@ -102,24 +109,49 @@ async def cancel(message: Message) -> None:
         await message.answer("Сейчас нечего отменять.")
 
 
-async def _ask_length(message: Message, job: Job) -> None:
+async def _ask_mode(message: Message, job: Job) -> None:
     pending[message.chat.id] = job
     await message.answer(
+        "Что сделать с видео?",
+        reply_markup=_kb([[(title, f"mode:{code}")] for code, title in MODES.items()]),
+    )
+
+
+async def _ask_length(message: Message) -> None:
+    await message.edit_text(
         "⏱ Какой длины нужны ролики?",
         reply_markup=_kb([[(f"~{s} сек", f"len:{s}") for s in LENGTHS]]),
     )
 
 
+async def _ask_language(message: Message) -> None:
+    await message.edit_text(
+        "🗣 На каком языке говорят в видео?",
+        reply_markup=_kb([[("🇷🇺 Русский", "lang:ru"), ("🇬🇧 English", "lang:en")]]),
+    )
+
+
+async def _enqueue(call: CallbackQuery, job: Job) -> None:
+    pending.pop(call.message.chat.id, None)
+    ahead = len(waiting) + (current is not None)
+    waiting.append(job)
+    await queue.put(job)
+    text = f"{MODES[job.mode]}\n\n✅ Принято!"
+    if ahead:
+        text += f"\n⏳ Видео в очереди: сначала закончу предыдущие ({ahead})."
+    await call.message.edit_text(text)
+
+
 @router.message(F.video | F.document.mime_type.startswith("video/"))
 async def on_video(message: Message) -> None:
     media = message.video or message.document
-    await _ask_length(message, Job(chat_id=message.chat.id, file_id=media.file_id))
+    await _ask_mode(message, Job(chat_id=message.chat.id, file_id=media.file_id))
 
 
 @router.message(F.text.regexp(URL_RE))
 async def on_url(message: Message) -> None:
     url = URL_RE.search(message.text).group(0)
-    await _ask_length(message, Job(chat_id=message.chat.id, url=url))
+    await _ask_mode(message, Job(chat_id=message.chat.id, url=url))
 
 
 @router.message()
@@ -127,37 +159,45 @@ async def fallback(message: Message) -> None:
     await message.answer("Пришли видео файлом или ссылкой 🙂")
 
 
-@router.callback_query(F.data.startswith("len:"))
-async def on_length(call: CallbackQuery) -> None:
+@router.callback_query(F.data.startswith("mode:"))
+async def on_mode(call: CallbackQuery) -> None:
     job = pending.get(call.message.chat.id)
     if not job:
         await call.answer("Сначала пришли видео", show_alert=True)
         return
+    job.mode = call.data.split(":")[1]
+    if job.mode == "cut":
+        job.language = "cut"
+        await _ask_length(call.message)  # cut needs only length
+    elif job.mode == "full":
+        await _ask_language(call.message)  # full video needs only language
+    else:
+        await _ask_length(call.message)  # clips need length, then language
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("len:"))
+async def on_length(call: CallbackQuery) -> None:
+    job = pending.get(call.message.chat.id)
+    if not job or not job.mode:
+        await call.answer("Сначала пришли видео", show_alert=True)
+        return
     job.target = int(call.data.split(":")[1])
-    await call.message.edit_text(
-        f"⏱ Длина: ~{job.target} сек\n\n🗣 Язык субтитров (или просто нарезать)?",
-        reply_markup=_kb([
-            [("🇷🇺 Русский", "lang:ru"), ("🇬🇧 English", "lang:en")],
-            [("✂️ Просто нарезать, без субтитров", "lang:cut")],
-        ]),
-    )
+    if job.mode == "cut":
+        await _enqueue(call, job)  # no subtitles, nothing more to ask
+    else:
+        await _ask_language(call.message)
     await call.answer()
 
 
 @router.callback_query(F.data.startswith("lang:"))
 async def on_language(call: CallbackQuery) -> None:
-    job = pending.pop(call.message.chat.id, None)
-    if not job or not job.target:
+    job = pending.get(call.message.chat.id)
+    if not job or not job.mode:
         await call.answer("Сначала пришли видео", show_alert=True)
         return
     job.language = call.data.split(":")[1]
-    ahead = len(waiting) + (current is not None)
-    waiting.append(job)
-    await queue.put(job)
-    text = f"⏱ ~{job.target} сек · {LANGUAGES[job.language]}\n\n✅ Принято!"
-    if ahead:
-        text += f"\n⏳ Видео в очереди: сначала закончу предыдущие ({ahead})."
-    await call.message.edit_text(text)
+    await _enqueue(call, job)
     await call.answer()
 
 
@@ -222,8 +262,11 @@ async def process(bot: Bot, job: Job) -> None:
         sent = 0
         if job.cancelled:
             raise pipeline.Cancelled
-        async for r in pipeline.run(cfg, src, work, job.target, job.language, progress, lambda: job.cancelled):
-            caption = f"Часть {r.part}/{r.total} · {_fmt(r.clip.start)}–{_fmt(r.clip.end)}"
+        async for r in pipeline.run(cfg, src, work, job.mode, job.target, job.language, progress, lambda: job.cancelled):
+            if job.mode == "full":
+                caption = "📝 Видео с субтитрами"
+            else:
+                caption = f"Часть {r.part}/{r.total} · {_fmt(r.clip.start)}–{_fmt(r.clip.end)}"
             if r.clip.title:
                 caption += f"\n{r.clip.title}"
             await bot.send_video(
