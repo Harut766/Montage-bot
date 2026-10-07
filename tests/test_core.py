@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from bot.clips import normalize_clips, split_evenly
+from bot.clips import split_by_time, split_evenly
 from bot.render import probe, render_clip
 from bot.subtitles import build_ass, group_words, make_layout
 from bot.transcribe import Segment, Word
@@ -30,18 +30,12 @@ def test_split_evenly_respects_bounds():
     assert all(a.end <= b.start for a, b in zip(clips, clips[1:]))
 
 
-def test_normalize_snaps_fixes_length_and_overlap():
-    segs = fake_segments(900)
-    raw = [
-        {"start": 400.3, "end": 520.9, "title": "B"},
-        {"start": 10.2, "end": 30.0, "title": "A"},  # too short -> extended
-        {"start": 450, "end": 560, "title": "overlap"},  # overlaps B -> dropped
-        {"start": "bad"},
-    ]
-    clips = normalize_clips(raw, segs, 900, 120)
-    assert [c.title for c in clips] == ["A", "B"]
-    for c in clips:
-        assert 95 <= c.duration <= 151
+def test_split_by_time_fixed_parts():
+    clips = split_by_time(130, 60)
+    assert [(round(c.start), round(c.end)) for c in clips] == [(0, 60), (60, 120), (120, 130)]
+    # A tiny trailing part is folded into the previous one.
+    clips = split_by_time(63, 60)
+    assert len(clips) == 1 and round(clips[0].end) == 63
 
 
 def test_layout_horizontal_keeps_text_off_video():
@@ -106,56 +100,3 @@ def test_sweep_tg_storage_keeps_db_and_fresh_files(tmp_path):
     assert not old_video.exists()
     assert new_video.exists() and db.exists()
 
-
-def test_gemini_prompt_and_parse():
-    import json
-
-    import pytest
-
-    from bot.gemini import GeminiError, build_prompt, parse_response
-
-    prompt = build_prompt(fake_segments(600), 600, 120, "ru")
-    assert "96-150 seconds" in prompt and "from 1 to 5 fragments" in prompt and "[0.0-5.0]" in prompt
-
-    ok = {"candidates": [{"content": {"parts": [{"text": json.dumps({"clips": [{"start": 1, "end": 2, "title": "t"}]})}]}}]}
-    assert parse_response(ok) == [{"start": 1, "end": 2, "title": "t"}]
-    with pytest.raises(GeminiError, match="SAFETY"):
-        parse_response({"promptFeedback": {"blockReason": "SAFETY"}})
-
-
-def test_gemini_falls_back_to_next_model(monkeypatch):
-    import asyncio
-    import json
-
-    from aiohttp import web
-
-    from bot import gemini
-
-    calls = []
-
-    async def handler(request):
-        model = request.match_info["model"]
-        calls.append(model)
-        if model == "busy":
-            return web.json_response({"error": {"message": "high demand"}}, status=503)
-        text = json.dumps({"clips": [{"start": 0, "end": 60, "title": "ok"}]})
-        return web.json_response({"candidates": [{"content": {"parts": [{"text": text}]}}]})
-
-    async def scenario():
-        app = web.Application()
-        app.router.add_post("/v1beta/models/{model}:generateContent", handler)
-        runner = web.AppRunner(app)
-        await runner.setup()
-        site = web.TCPSite(runner, "127.0.0.1", 0)
-        await site.start()
-        port = site._server.sockets[0].getsockname()[1]
-        monkeypatch.setattr(gemini, "API_URL", f"http://127.0.0.1:{port}/v1beta/models/{{model}}:generateContent")
-        monkeypatch.setattr(gemini, "RETRY_DELAY", 0)
-        try:
-            return await gemini.choose_fragments("key", ["busy", "good"], fake_segments(120), 120, 60, "ru")
-        finally:
-            await runner.cleanup()
-
-    clips = asyncio.run(scenario())
-    assert clips[0]["title"] == "ok"
-    assert calls == ["busy", "busy", "good"]
