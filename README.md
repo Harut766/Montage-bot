@@ -23,7 +23,6 @@ Telegram-бот: присылаешь длинное видео (влог до ~
 - Токен бота от [@BotFather](https://t.me/BotFather).
 - `api_id` и `api_hash` с [my.telegram.org](https://my.telegram.org) → *API development tools*
   (нужны для Local Bot API Server, чтобы принимать большие файлы).
-- Ключ Gemini API: [aistudio.google.com/apikey](https://aistudio.google.com/apikey).
 
 ### 2. Настройка
 ```bash
