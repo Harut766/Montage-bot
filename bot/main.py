@@ -111,12 +111,18 @@ async def cancel(message: Message) -> None:
         await message.answer("Сейчас нечего отменять.")
 
 
+def _mode_kb(job: Job) -> InlineKeyboardMarkup:
+    rows = [[(title, f"mode:{code}")] for code, title in MODES.items()]
+    # Ad toggles sit under the modes: tap to switch on/off, then pick a mode.
+    for code, ad in ADS.items():
+        mark = "✅" if job.ad == code else "⬜️"
+        rows.append([(f"{mark} Реклама {ad.title} в каждой части", f"ad:{code}")])
+    return _kb(rows)
+
+
 async def _ask_mode(message: Message, job: Job) -> None:
     pending[message.chat.id] = job
-    await message.answer(
-        "Что сделать с видео?",
-        reply_markup=_kb([[(title, f"mode:{code}")] for code, title in MODES.items()]),
-    )
+    await message.answer("Что сделать с видео?", reply_markup=_mode_kb(job))
 
 
 async def _ask_length(message: Message) -> None:
@@ -130,13 +136,6 @@ async def _ask_language(message: Message) -> None:
     await message.edit_text(
         "🗣 На каком языке говорят в видео?",
         reply_markup=_kb([[("🇷🇺 Русский", "lang:ru"), ("🇬🇧 English", "lang:en")]]),
-    )
-
-
-async def _ask_ad(message: Message) -> None:
-    await message.edit_text(
-        "📢 Вставить рекламу в середину каждой части?",
-        reply_markup=_kb([[(ad.title, f"ad:{code}")] for code, ad in ADS.items()] + [[("Без рекламы", "ad:none")]]),
     )
 
 
@@ -196,7 +195,7 @@ async def on_length(call: CallbackQuery) -> None:
         return
     job.target = int(call.data.split(":")[1])
     if job.mode == "cut":
-        await _ask_ad(call.message)  # no subtitles, no language to ask
+        await _enqueue(call, job)  # no subtitles, nothing more to ask
     else:
         await _ask_language(call.message)
     await call.answer()
@@ -209,20 +208,20 @@ async def on_language(call: CallbackQuery) -> None:
         await call.answer("Сначала пришли видео", show_alert=True)
         return
     job.language = call.data.split(":")[1]
-    await _ask_ad(call.message)
+    await _enqueue(call, job)
     await call.answer()
 
 
 @router.callback_query(F.data.startswith("ad:"))
 async def on_ad(call: CallbackQuery) -> None:
     job = pending.get(call.message.chat.id)
-    if not job or not job.language:
+    if not job or job.mode:
         await call.answer("Сначала пришли видео", show_alert=True)
         return
     code = call.data.split(":")[1]
-    job.ad = code if code in ADS else None
-    await _enqueue(call, job)
-    await call.answer()
+    job.ad = None if job.ad == code else code
+    await call.message.edit_reply_markup(reply_markup=_mode_kb(job))
+    await call.answer("Реклама включена" if job.ad else "Реклама выключена")
 
 
 # ---------- processing ----------
