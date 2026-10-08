@@ -22,6 +22,7 @@ from aiogram.types import (
 )
 
 from . import pipeline
+from .ads import ADS
 from .cleanup import sweep_tg_storage
 from .config import Config
 
@@ -50,6 +51,7 @@ class Job:
     mode: str | None = None
     target: int | None = None
     language: str | None = None
+    ad: str | None = None
     cancelled: bool = False
 
 
@@ -131,12 +133,22 @@ async def _ask_language(message: Message) -> None:
     )
 
 
+async def _ask_ad(message: Message) -> None:
+    await message.edit_text(
+        "📢 Вставить рекламу в середину каждой части?",
+        reply_markup=_kb([[(ad.title, f"ad:{code}")] for code, ad in ADS.items()] + [[("Без рекламы", "ad:none")]]),
+    )
+
+
 async def _enqueue(call: CallbackQuery, job: Job) -> None:
     pending.pop(call.message.chat.id, None)
     ahead = len(waiting) + (current is not None)
     waiting.append(job)
     await queue.put(job)
-    text = f"{MODES[job.mode]}\n\n✅ Принято!"
+    text = f"{MODES[job.mode]}"
+    if job.ad:
+        text += f"\n📢 Реклама: {ADS[job.ad].title}"
+    text += "\n\n✅ Принято!"
     if ahead:
         text += f"\n⏳ Видео в очереди: сначала закончу предыдущие ({ahead})."
     await call.message.edit_text(text)
@@ -184,7 +196,7 @@ async def on_length(call: CallbackQuery) -> None:
         return
     job.target = int(call.data.split(":")[1])
     if job.mode == "cut":
-        await _enqueue(call, job)  # no subtitles, nothing more to ask
+        await _ask_ad(call.message)  # no subtitles, no language to ask
     else:
         await _ask_language(call.message)
     await call.answer()
@@ -197,6 +209,18 @@ async def on_language(call: CallbackQuery) -> None:
         await call.answer("Сначала пришли видео", show_alert=True)
         return
     job.language = call.data.split(":")[1]
+    await _ask_ad(call.message)
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("ad:"))
+async def on_ad(call: CallbackQuery) -> None:
+    job = pending.get(call.message.chat.id)
+    if not job or not job.language:
+        await call.answer("Сначала пришли видео", show_alert=True)
+        return
+    code = call.data.split(":")[1]
+    job.ad = code if code in ADS else None
     await _enqueue(call, job)
     await call.answer()
 
@@ -262,7 +286,10 @@ async def process(bot: Bot, job: Job) -> None:
         sent = 0
         if job.cancelled:
             raise pipeline.Cancelled
-        async for r in pipeline.run(cfg, src, work, job.mode, job.target, job.language, progress, lambda: job.cancelled):
+        ad = ADS.get(job.ad) if job.ad else None
+        async for r in pipeline.run(
+            cfg, src, work, job.mode, job.target, job.language, progress, lambda: job.cancelled, ad
+        ):
             if job.mode == "full":
                 caption = "📝 Видео с субтитрами"
             else:

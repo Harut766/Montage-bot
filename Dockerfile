@@ -9,6 +9,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY fonts ./fonts
+COPY ads ./ads
 COPY bot ./bot
 
 ENV PYTHONUNBUFFERED=1 FONTS_DIR=/app/fonts WORK_DIR=/data/work

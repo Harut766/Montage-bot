@@ -5,6 +5,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from .ads import Ad
 from .clips import Clip, split_by_time, split_evenly
 from .config import Config
 from .render import extract_audio, probe, render_clip
@@ -37,9 +38,10 @@ async def run(
     language: str,
     progress: Progress,
     is_cancelled: Callable[[], bool] = lambda: False,
+    ad: Ad | None = None,
 ) -> AsyncIterator[RenderedClip]:
     """mode: 'clips' (even split on phrase boundaries + subtitles), 'cut' (even split, no subtitles),
-    'full' (whole video + subtitles, no cutting)."""
+    'full' (whole video + subtitles, no cutting). `ad` is inserted in the centre of every clip."""
     info = await asyncio.to_thread(probe, src)
     layout = make_layout(info.width, info.height)
 
@@ -80,5 +82,5 @@ async def run(
             build_ass(segments, clip.start, clip.end, layout, n, label_lang, show_label), encoding="utf-8"
         )
         out = work / f"part_{n:02d}.mp4"
-        await asyncio.to_thread(render_clip, src, clip.start, clip.end, ass, layout, cfg.fonts_dir, out)
+        await asyncio.to_thread(render_clip, src, clip.start, clip.end, ass, layout, cfg.fonts_dir, out, ad)
         yield RenderedClip(out, n, total, clip)

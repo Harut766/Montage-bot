@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from bot.ads import ADS, ad_start
 from bot.clips import split_by_time, split_evenly
 from bot.render import probe, render_clip
 from bot.subtitles import build_ass, group_words, make_layout
@@ -100,3 +101,30 @@ def test_sweep_tg_storage_keeps_db_and_fresh_files(tmp_path):
     assert not old_video.exists()
     assert new_video.exists() and db.exists()
 
+
+
+def test_ad_is_centred_in_time():
+    assert ad_start(60, 5) == 27.5
+    assert ad_start(3, 5) == 0.0
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
+def test_render_with_ad_keys_out_blue(tmp_path: Path):
+    src = tmp_path / "src.mp4"
+    subprocess.run([
+        "ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "color=c=red:s=640x360:r=30:d=8",
+        "-f", "lavfi", "-i", "sine=f=440:d=8", "-shortest", "-c:v", "libx264", "-c:a", "aac", str(src),
+    ], check=True)
+    layout = make_layout(640, 360)
+    ass = tmp_path / "p.ass"
+    ass.write_text(build_ass([], 0, 8, layout, 1, "ru", True), encoding="utf-8")
+    out = tmp_path / "out.mp4"
+    render_clip(src, 0, 8, ass, layout, FONTS, out, ADS["bubavpn"])
+    assert abs(probe(out).duration - 8) < 0.2
+    # Mid-clip, the ad's corner (blue in the source ad) must show the red video through it.
+    px = subprocess.run([
+        "ffmpeg", "-v", "error", "-ss", "4", "-i", str(out), "-frames:v", "1",
+        "-vf", "crop=4:4:68:820", "-f", "rawvideo", "-pix_fmt", "rgb24", "-",
+    ], capture_output=True, check=True).stdout
+    r, g, b = px[0], px[1], px[2]
+    assert r > 150 and b < 100
