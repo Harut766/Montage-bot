@@ -5,6 +5,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from .banner import find_banner, schedule
 from .clips import Clip, split_by_time, split_evenly
 from .config import Config
 from .render import extract_audio, probe, render_clip
@@ -14,6 +15,10 @@ from .transcribe import Segment, transcribe
 log = logging.getLogger(__name__)
 
 Progress = Callable[[str], Awaitable[None]]
+
+# Contest rule 1.4: a clip accepted for payout is 10–300 seconds.
+MIN_CLIP_SECONDS = 10.0
+MAX_CLIP_SECONDS = 300.0
 
 
 class Cancelled(Exception):
@@ -42,6 +47,16 @@ async def run(
     'full' (whole video + subtitles, no cutting)."""
     info = await asyncio.to_thread(probe, src)
     layout = make_layout(info.width, info.height)
+
+    # Contest rule 1.4: each clip must be 10–300 seconds.
+    if info.duration < MIN_CLIP_SECONDS:
+        raise RuntimeError("Видео короче 10 секунд — такое не принимается на выплату")
+    if mode == "full" and info.duration > MAX_CLIP_SECONDS:
+        m, s = divmod(int(info.duration), 60)
+        raise RuntimeError(
+            f"Видео длиннее 5 минут ({m}:{s:02d}), а для субтитров на всё видео максимум 5 минут.\n"
+            "Выбери режим нарезки — тогда ролик разобьётся на части по правилам."
+        )
 
     if mode == "cut":
         # No speech-to-text, no subtitles — just fixed parts with a "Часть N" label.
@@ -80,5 +95,10 @@ async def run(
             build_ass(segments, clip.start, clip.end, layout, n, label_lang, show_label), encoding="utf-8"
         )
         out = work / f"part_{n:02d}.mp4"
-        await asyncio.to_thread(render_clip, src, clip.start, clip.end, ass, layout, cfg.fonts_dir, out)
+        # Animated banner centred on each clip, at the times the contest rules require.
+        banner = find_banner(cfg.banner_path)
+        banner_times = schedule(clip.duration) if banner else None
+        await asyncio.to_thread(
+            render_clip, src, clip.start, clip.end, ass, layout, cfg.fonts_dir, out, banner, banner_times
+        )
         yield RenderedClip(out, n, total, clip)

@@ -100,3 +100,17 @@ def test_sweep_tg_storage_keeps_db_and_fresh_files(tmp_path):
     assert not old_video.exists()
     assert new_video.exists() and db.exists()
 
+
+
+def test_banner_schedule_matches_rules():
+    from bot.banner import schedule, scaled_size
+    from bot.subtitles import OUT_H, OUT_W
+
+    assert schedule(60) == [30.0]          # ≤2:00 → one in the middle
+    assert schedule(120) == [60.0]
+    assert schedule(180) == [30.0, 90.0, 150.0]   # 2:00–3:00 → three
+    assert schedule(300) == [30.0, 90.0, 150.0, 210.0, 270.0]
+    for bw, bh in [(600, 600), (1920, 1080), (1080, 1920)]:
+        w, h = scaled_size(bw, bh)
+        assert w * h / (OUT_W * OUT_H) >= 0.25   # rule 3.2: at least 25% of the screen
+        assert w <= OUT_W and h <= OUT_H

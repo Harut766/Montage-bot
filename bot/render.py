@@ -44,25 +44,65 @@ def extract_audio(src: Path, dst: Path) -> None:
 
 
 def render_clip(
-    src: Path, start: float, end: float, ass_file: Path, layout: Layout, fonts_dir: Path, out: Path
+    src: Path,
+    start: float,
+    end: float,
+    ass_file: Path,
+    layout: Layout,
+    fonts_dir: Path,
+    out: Path,
+    banner: Path | None = None,
+    banner_times: list[float] | None = None,
 ) -> None:
-    """Blurred copy of the frame as a 9:16 background, the original on top, subtitles burned in.
+    """Blurred copy of the frame as a 9:16 background, the original on top, subtitles burned in,
+    and (if given) an animated banner centred on screen at each time in `banner_times`.
 
     The ASS file is referenced by a bare name relative to its directory to avoid filter-escaping issues.
     """
-    graph = (
+    from .banner import STILL_SECONDS, scaled_size
+
+    base = (
         "[0:v]split=2[a][b];"
         "[a]scale=270:480:force_original_aspect_ratio=increase,crop=270:480,"
         f"gblur=sigma=10,eq=brightness=-0.08,scale={OUT_W}:{OUT_H},setsar=1[bg];"
         f"[b]scale={layout.fg_w}:{layout.fg_h},setsar=1[fg];"
         f"[bg][fg]overlay=(W-w)/2:{layout.fg_y},"
-        f"ass={ass_file.name}:fontsdir={fonts_dir.resolve()},fps=30,format=yuv420p[v]"
+        f"ass={ass_file.name}:fontsdir={fonts_dir.resolve()},fps=30,format=yuv420p[v0]"
     )
+
+    inputs = ["-ss", f"{start:.3f}", "-t", f"{end - start:.3f}", "-i", str(src.resolve())]
+    parts = [base]
+    last = "[v0]"
+
+    times = banner_times or []
+    if banner and times:
+        info = probe(banner)
+        bw, bh = scaled_size(info.width, info.height)
+        is_still = banner.suffix.lower() in (".png", ".jpg", ".jpeg")
+        bdur = STILL_SECONDS if is_still else info.duration
+        for i, t0 in enumerate(times):
+            idx = i + 1  # input 0 is the source clip
+            if is_still:
+                inputs += ["-loop", "1", "-t", f"{bdur:.3f}", "-i", str(banner.resolve())]
+            else:
+                inputs += ["-i", str(banner.resolve())]
+            t1 = t0 + bdur
+            parts.append(
+                f"[{idx}:v]scale={bw}:{bh},setsar=1,setpts=PTS-STARTPTS+{t0:.3f}/TB[bn{i}]"
+            )
+            nxt = f"[v{i + 1}]"
+            parts.append(
+                f"{last}[bn{i}]overlay=(W-w)/2:(H-h)/2:enable='between(t,{t0:.3f},{t1:.3f})':"
+                f"eof_action=pass{nxt}"
+            )
+            last = nxt
+
+    graph = ";".join(parts)
     _run([
         "ffmpeg", "-y",
-        "-ss", f"{start:.3f}", "-t", f"{end - start:.3f}", "-i", str(src.resolve()),
+        *inputs,
         "-filter_complex", graph,
-        "-map", "[v]", "-map", "0:a?",
+        "-map", last, "-map", "0:a?",
         "-c:v", "libx264", "-preset", "medium", "-crf", "20", "-profile:v", "high",
         "-c:a", "aac", "-b:a", "160k", "-ar", "44100",
         "-movflags", "+faststart",

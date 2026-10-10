@@ -25,6 +25,8 @@ class Config:
     fonts_dir: Path
     # Optional Netscape-format cookies.txt for yt-dlp, so YouTube links that demand sign-in still download.
     cookies_file: Path
+    # Animated banner (banner.mp4/gif/…) overlaid on every clip per the contest rules; file or folder.
+    banner_path: Path
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -38,4 +40,5 @@ class Config:
             tg_storage_dir=Path(os.environ.get("TG_STORAGE_DIR", "/var/lib/telegram-bot-api")),
             fonts_dir=Path(os.environ.get("FONTS_DIR", Path(__file__).resolve().parent.parent / "fonts")),
             cookies_file=Path(os.environ.get("COOKIES_FILE", "/data/cookies.txt")),
+            banner_path=Path(os.environ.get("BANNER_PATH", "/data")),
         )
