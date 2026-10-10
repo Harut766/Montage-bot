@@ -10,6 +10,10 @@ BANNER_AREA = 0.25
 # A banner may be scaled up to the full screen width and this fraction of its height.
 MAX_W_FRAC = 1.0
 MAX_H_FRAC = 0.72
+# Widest a banner can be and still fill 25% at full screen width; wider ones are side-cropped to this.
+TARGET_ASPECT = OUT_W / (BANNER_AREA * OUT_H)
+# Never crop away more than this fraction of the banner width (avoid cutting real content).
+MAX_CROP_FRAC = 0.15
 # How long a banner stays on screen when the source is a still image (animated files play their own length).
 STILL_SECONDS = 5.0
 BANNER_NAMES = ("banner.mp4", "banner.mov", "banner.webm", "banner.gif", "banner.png", "banner.jpg")
@@ -65,6 +69,24 @@ def key_color(banner: Path) -> str | None:
     return f"0x{r:02X}{g:02X}{b:02X}"
 
 
+def crop_box(bw: int, bh: int) -> tuple[int, int, int, int] | None:
+    """Horizontal centre-crop to reach TARGET_ASPECT, so a wide banner can fill 25%.
+
+    Returns (w, h, x, y) for ffmpeg crop, or None when no crop is needed. The crop never
+    removes more than MAX_CROP_FRAC of the width.
+    """
+    if bw / bh <= TARGET_ASPECT + 1e-3:
+        return None
+    cw = max(bh * TARGET_ASPECT, bw * (1 - MAX_CROP_FRAC))
+    cw = min(int(cw) // 2 * 2, bw)
+    return cw, bh, (bw - cw) // 2, 0
+
+
+def effective_size(bw: int, bh: int) -> tuple[int, int]:
+    box = crop_box(bw, bh)
+    return (box[0], box[1]) if box else (bw, bh)
+
+
 def scaled_size(bw: int, bh: int) -> tuple[int, int]:
     """Scale the banner to at least BANNER_AREA of the screen, keeping aspect.
 
@@ -80,6 +102,7 @@ def scaled_size(bw: int, bh: int) -> tuple[int, int]:
 
 
 def covers_enough(bw: int, bh: int) -> bool:
-    w, h = scaled_size(bw, bh)
+    ew, eh = effective_size(bw, bh)
+    w, h = scaled_size(ew, eh)
     # 0.5% tolerance for even-size rounding.
     return w * h >= BANNER_AREA * OUT_W * OUT_H * 0.995

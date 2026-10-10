@@ -5,7 +5,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from .banner import covers_enough, find_banner, scaled_size, schedule
+from .banner import covers_enough, effective_size, find_banner, scaled_size, schedule
 from .clips import Clip, split_by_time, split_evenly
 from .config import Config
 from .render import extract_audio, probe, render_clip
@@ -88,7 +88,8 @@ async def run(
     if banner:
         binfo = await asyncio.to_thread(probe, banner)
         if not covers_enough(binfo.width, binfo.height):
-            w, h = scaled_size(binfo.width, binfo.height)
+            ew, eh = effective_size(binfo.width, binfo.height)
+            w, h = scaled_size(ew, eh)
             pct = round(100 * w * h / (OUT_W * OUT_H))
             await progress(
                 f"⚠️ Баннер широкий ({binfo.width}×{binfo.height}) — на экране займёт ~{pct}% "
