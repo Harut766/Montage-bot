@@ -59,7 +59,7 @@ def render_clip(
 
     The ASS file is referenced by a bare name relative to its directory to avoid filter-escaping issues.
     """
-    from .banner import STILL_SECONDS, scaled_size
+    from .banner import STILL_SECONDS, key_color, scaled_size
 
     base = (
         "[0:v]split=2[a][b];"
@@ -80,6 +80,9 @@ def render_clip(
         bw, bh = scaled_size(info.width, info.height)
         is_still = banner.suffix.lower() in (".png", ".jpg", ".jpeg")
         bdur = STILL_SECONDS if is_still else info.duration
+        # Remove the chromakey background (rule 2.8) so only the banner card is overlaid.
+        ck = key_color(banner)
+        key = f"colorkey={ck}:0.20:0.10," if ck else ""
         for i, t0 in enumerate(times):
             idx = i + 1  # input 0 is the source clip
             if is_still:
@@ -88,7 +91,7 @@ def render_clip(
                 inputs += ["-i", str(banner.resolve())]
             t1 = t0 + bdur
             parts.append(
-                f"[{idx}:v]scale={bw}:{bh},setsar=1,setpts=PTS-STARTPTS+{t0:.3f}/TB[bn{i}]"
+                f"[{idx}:v]{key}scale={bw}:{bh},setsar=1,setpts=PTS-STARTPTS+{t0:.3f}/TB[bn{i}]"
             )
             nxt = f"[v{i + 1}]"
             parts.append(

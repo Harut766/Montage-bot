@@ -5,11 +5,11 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from .banner import find_banner, schedule
+from .banner import covers_enough, find_banner, scaled_size, schedule
 from .clips import Clip, split_by_time, split_evenly
 from .config import Config
 from .render import extract_audio, probe, render_clip
-from .subtitles import build_ass, make_layout
+from .subtitles import OUT_H, OUT_W, build_ass, make_layout
 from .transcribe import Segment, transcribe
 
 log = logging.getLogger(__name__)
@@ -83,6 +83,18 @@ async def run(
             # Even split on phrase boundaries, each part gets subtitles and a "Часть N" label.
             clips = split_evenly(segments, info.duration, target)
 
+    # Warn once if the banner is too wide to reach 25% of the screen (rule 3.2).
+    banner = find_banner(cfg.banner_path)
+    if banner:
+        binfo = await asyncio.to_thread(probe, banner)
+        if not covers_enough(binfo.width, binfo.height):
+            w, h = scaled_size(binfo.width, binfo.height)
+            pct = round(100 * w * h / (OUT_W * OUT_H))
+            await progress(
+                f"⚠️ Баннер широкий ({binfo.width}×{binfo.height}) — на экране займёт ~{pct}% "
+                "вместо 25% по правилу. Сделай баннер более квадратным (не шире ~1.9:1)."
+            )
+
     total = len(clips)
     show_label = mode != "full"
     for n, clip in enumerate(clips, start=1):
@@ -96,7 +108,6 @@ async def run(
         )
         out = work / f"part_{n:02d}.mp4"
         # Animated banner centred on each clip, at the times the contest rules require.
-        banner = find_banner(cfg.banner_path)
         banner_times = schedule(clip.duration) if banner else None
         await asyncio.to_thread(
             render_clip, src, clip.start, clip.end, ass, layout, cfg.fonts_dir, out, banner, banner_times

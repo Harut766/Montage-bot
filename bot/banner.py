@@ -1,11 +1,15 @@
 """Animated banner placement following the BUBA VPN contest rules (3.1–3.4)."""
 import math
+import subprocess
 from pathlib import Path
 
 from .subtitles import OUT_H, OUT_W
 
-# Banner must cover at least 25% of the screen; aim a bit higher so rounding never drops below.
-BANNER_AREA = 0.28
+# Rule 3.2: banner covers at least 25% of the screen.
+BANNER_AREA = 0.25
+# A banner may be scaled up to the full screen width and this fraction of its height.
+MAX_W_FRAC = 1.0
+MAX_H_FRAC = 0.72
 # How long a banner stays on screen when the source is a still image (animated files play their own length).
 STILL_SECONDS = 5.0
 BANNER_NAMES = ("banner.mp4", "banner.mov", "banner.webm", "banner.gif", "banner.png", "banner.jpg")
@@ -39,11 +43,43 @@ def schedule(duration: float) -> list[float]:
     return times
 
 
+def key_color(banner: Path) -> str | None:
+    """Sample the banner's top-left pixel as the chromakey colour (0xRRGGBB), or None on failure.
+
+    The corner of a chromakey banner is always the background, so this works for blue or green.
+    """
+    try:
+        raw = subprocess.run(
+            ["ffmpeg", "-v", "error", "-i", str(banner), "-frames:v", "1",
+             "-vf", "crop=2:2:2:2,scale=1:1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+            capture_output=True, timeout=30,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if len(raw) < 3:
+        return None
+    r, g, b = raw[0], raw[1], raw[2]
+    # Only treat a strongly saturated corner as a chromakey; a dark/neutral corner means no key.
+    if max(r, g, b) - min(r, g, b) < 60:
+        return None
+    return f"0x{r:02X}{g:02X}{b:02X}"
+
+
 def scaled_size(bw: int, bh: int) -> tuple[int, int]:
-    """Scale the banner to ~BANNER_AREA of the screen, keeping aspect, without covering it all."""
-    s = math.sqrt(BANNER_AREA * OUT_W * OUT_H / (bw * bh))
-    max_w, max_h = OUT_W * 0.95, OUT_H * 0.6
-    s = min(s, max_w / bw, max_h / bh)
+    """Scale the banner to at least BANNER_AREA of the screen, keeping aspect.
+
+    A very wide banner cannot reach 25% within the screen width; then it is scaled as large as
+    it fits (max coverage). `covers_enough` reports whether the 25% rule is actually met.
+    """
+    s_area = math.sqrt(BANNER_AREA * OUT_W * OUT_H / (bw * bh))
+    s_fit = min(MAX_W_FRAC * OUT_W / bw, MAX_H_FRAC * OUT_H / bh)
+    s = min(s_area, s_fit)
     w = max(2, int(round(bw * s)) // 2 * 2)
     h = max(2, int(round(bh * s)) // 2 * 2)
     return w, h
+
+
+def covers_enough(bw: int, bh: int) -> bool:
+    w, h = scaled_size(bw, bh)
+    # 0.5% tolerance for even-size rounding.
+    return w * h >= BANNER_AREA * OUT_W * OUT_H * 0.995
