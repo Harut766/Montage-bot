@@ -114,3 +114,40 @@ def test_banner_schedule_matches_rules():
         w, h = scaled_size(bw, bh)
         assert w * h / (OUT_W * OUT_H) >= 0.25   # rule 3.2: at least 25% of the screen
         assert w <= OUT_W and h <= OUT_H
+
+
+def test_pick_percent_range():
+    from bot.volume import MAX_PERCENT, MIN_PERCENT, pick_percent
+
+    values = {pick_percent() for _ in range(2000)}
+    assert min(values) > 105 and max(values) <= 130
+    assert MIN_PERCENT in values and MAX_PERCENT in values
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg not installed")
+def test_boost_volume_makes_louder_and_keeps_video(tmp_path):
+    import json
+
+    from bot.volume import boost_volume
+
+    src = tmp_path / "src.mp4"
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30:duration=3",
+         "-f", "lavfi", "-i", "sine=frequency=440:duration=3", "-af", "volume=0.3",
+         "-c:v", "libx264", "-c:a", "aac", "-shortest", str(src)],
+        check=True, capture_output=True,
+    )
+    out = tmp_path / "out.mp4"
+    boost_volume(src, out, 130)
+
+    def mean_db(p: Path) -> float:
+        r = subprocess.run(["ffmpeg", "-i", str(p), "-af", "volumedetect", "-f", "null", "-"],
+                           capture_output=True, text=True)
+        return float(r.stderr.split("mean_volume:")[1].split("dB")[0])
+
+    # +30% amplitude is about +2.3 dB.
+    assert 1.8 < mean_db(out) - mean_db(src) < 2.8
+    codec = json.loads(subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name,width",
+         "-of", "json", str(out)], capture_output=True, text=True, check=True).stdout)["streams"][0]
+    assert codec == {"codec_name": "h264", "width": 640}

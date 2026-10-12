@@ -22,12 +22,15 @@ from aiogram.types import (
 )
 
 from . import pipeline
+from .volume import boost_volume, pick_percent
 from .cleanup import sweep_tg_storage
 from .config import Config
 
 log = logging.getLogger(__name__)
 
 URL_RE = re.compile(r"https?://\S+")
+# Facebook links skip the menu and go straight to the volume boost.
+FACEBOOK_RE = re.compile(r"^https?://([a-z0-9-]+\.)*(facebook\.com|fb\.watch|fb\.com)/", re.I)
 LENGTHS = (60, 120, 180)
 UPLOAD_TIMEOUT = 900
 SWEEP_EVERY = 3600
@@ -39,6 +42,7 @@ MODES = {
     "clips": "✂️ Нарезать на части с субтитрами",
     "full": "📝 Только субтитры, не резать",
     "cut": "✂️ Просто нарезать, без субтитров",
+    "volume": "🔊 Только сделать громче (105–130%)",
 }
 
 
@@ -92,7 +96,8 @@ async def no_access(message: Message) -> None:
 async def start(message: Message) -> None:
     await message.answer(
         "Привет! Пришли видео (файлом, до 2 ГБ) или ссылку на него.\n"
-        "Я нарежу его на вертикальные ролики для TikTok с субтитрами.\n\n"
+        "Я нарежу его на вертикальные ролики для TikTok с субтитрами.\n"
+        "Ссылку на Facebook-видео сразу делаю громче (случайно 105–130%) и присылаю обратно.\n\n"
         "/cancel — отменить обработку"
     )
 
@@ -131,15 +136,19 @@ async def _ask_language(message: Message) -> None:
     )
 
 
-async def _enqueue(call: CallbackQuery, job: Job) -> None:
-    pending.pop(call.message.chat.id, None)
+async def _put(job: Job) -> str:
+    pending.pop(job.chat_id, None)
     ahead = len(waiting) + (current is not None)
     waiting.append(job)
     await queue.put(job)
     text = f"{MODES[job.mode]}\n\n✅ Принято!"
     if ahead:
         text += f"\n⏳ Видео в очереди: сначала закончу предыдущие ({ahead})."
-    await call.message.edit_text(text)
+    return text
+
+
+async def _enqueue(call: CallbackQuery, job: Job) -> None:
+    await call.message.edit_text(await _put(job))
 
 
 @router.message(F.video | F.document.mime_type.startswith("video/"))
@@ -151,7 +160,12 @@ async def on_video(message: Message) -> None:
 @router.message(F.text.regexp(URL_RE))
 async def on_url(message: Message) -> None:
     url = URL_RE.search(message.text).group(0)
-    await _ask_mode(message, Job(chat_id=message.chat.id, url=url))
+    job = Job(chat_id=message.chat.id, url=url)
+    if FACEBOOK_RE.match(url):
+        job.mode = "volume"
+        await message.answer(await _put(job))
+        return
+    await _ask_mode(message, job)
 
 
 @router.message()
@@ -169,6 +183,8 @@ async def on_mode(call: CallbackQuery) -> None:
     if job.mode == "cut":
         job.language = "cut"
         await _ask_length(call.message)  # cut needs only length
+    elif job.mode == "volume":
+        await _enqueue(call, job)  # nothing to ask
     elif job.mode == "full":
         await _ask_language(call.message)  # full video needs only language
     else:
@@ -262,6 +278,9 @@ async def process(bot: Bot, job: Job) -> None:
         sent = 0
         if job.cancelled:
             raise pipeline.Cancelled
+        if job.mode == "volume":
+            await send_louder(bot, job, src, work, progress)
+            return
         async for r in pipeline.run(cfg, src, work, job.mode, job.target, job.language, progress, lambda: job.cancelled):
             if job.mode == "full":
                 caption = "📝 Видео с субтитрами"
@@ -291,6 +310,26 @@ async def process(bot: Bot, job: Job) -> None:
         shutil.rmtree(work, ignore_errors=True)
         if from_server and src:
             src.unlink(missing_ok=True)
+
+
+async def send_louder(bot: Bot, job: Job, src: Path, work: Path, progress) -> None:
+    percent = pick_percent()
+    await progress(f"🔊 Делаю громче: {percent}%…")
+    out = work / "louder.mp4"
+    await asyncio.to_thread(boost_volume, src, out, percent)
+    info = await asyncio.to_thread(pipeline.probe, out)
+    await bot.send_video(
+        job.chat_id,
+        FSInputFile(out),
+        caption=f"🔊 Громкость {percent}%",
+        width=info.width,
+        height=info.height,
+        duration=int(info.duration),
+        supports_streaming=True,
+        request_timeout=UPLOAD_TIMEOUT,
+    )
+    out.unlink(missing_ok=True)
+    await progress(f"✅ Готово! Громкость {percent}% (оригинал — 100%)")
 
 
 async def worker(bot: Bot) -> None:
