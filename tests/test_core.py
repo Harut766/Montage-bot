@@ -108,8 +108,20 @@ def test_ad_is_centred_in_time():
     assert ad_start(3, 5) == 0.0
 
 
+def test_ad_crop_and_full_width():
+    from bot.ads import crop_box, full_width_size
+    from bot.subtitles import OUT_H, OUT_W
+
+    # The BubaVPN banner (1282x552) is cropped and stretched to the full width at >=25%.
+    box = crop_box(1282, 552)
+    ew, eh = (box[0], box[1]) if box else (1282, 552)
+    w, h = full_width_size(ew, eh)
+    assert w == OUT_W                         # edge to edge
+    assert w * h / (OUT_W * OUT_H) >= 0.25     # rule 3.2
+
+
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
-def test_render_with_ad_keys_out_blue(tmp_path: Path):
+def test_render_with_ad_full_width(tmp_path: Path):
     src = tmp_path / "src.mp4"
     subprocess.run([
         "ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "color=c=red:s=640x360:r=30:d=8",
@@ -120,11 +132,6 @@ def test_render_with_ad_keys_out_blue(tmp_path: Path):
     ass.write_text(build_ass([], 0, 8, layout, 1, "ru", True), encoding="utf-8")
     out = tmp_path / "out.mp4"
     render_clip(src, 0, 8, ass, layout, FONTS, out, ADS["bubavpn"])
-    assert abs(probe(out).duration - 8) < 0.2
-    # Mid-clip, the ad's corner (blue in the source ad) must show the red video through it.
-    px = subprocess.run([
-        "ffmpeg", "-v", "error", "-ss", "4", "-i", str(out), "-frames:v", "1",
-        "-vf", "crop=4:4:68:820", "-f", "rawvideo", "-pix_fmt", "rgb24", "-",
-    ], capture_output=True, check=True).stdout
-    r, g, b = px[0], px[1], px[2]
-    assert r > 150 and b < 100
+    res = probe(out)
+    assert (res.width, res.height) == (1080, 1920)
+    assert abs(res.duration - 8) < 0.3

@@ -55,10 +55,13 @@ def render_clip(
 ) -> None:
     """Blurred copy of the frame as a 9:16 background, the original on top, subtitles burned in.
 
-    With `ad`, its chroma-key background is removed and the ad plays in the centre of the frame,
-    in the middle of the clip; the clip's own sound is turned down while the ad speaks.
+    With `ad`, it is laid EDGE TO EDGE (full screen width), centred, in the middle of the clip,
+    covering ~27% of the screen (contest rule 3.2). A chromakey background is removed only when the
+    ad defines one. The clip keeps its own audio so the voice-over stays clearly audible (rule 2.3).
     The ASS file is referenced by a bare name relative to its directory to avoid filter-escaping issues.
     """
+    from .ads import crop_box, full_width_size
+
     duration = end - start
     inputs = ["-ss", f"{start:.3f}", "-t", f"{duration:.3f}", "-i", str(src.resolve())]
     chains = [
@@ -72,25 +75,18 @@ def render_clip(
     audio_map = ["-map", "0:a?"]
     if ad:
         inputs += ["-i", str(ad.file.resolve())]
-        ad_dur = probe(ad.file).duration
-        t0 = ad_start(duration, ad_dur)
+        info = probe(ad.file)
+        t0 = ad_start(duration, info.duration)
+        box = crop_box(info.width, info.height)
+        crop = f"crop={box[0]}:{box[1]}:{box[2]}:{box[3]}," if box else ""
+        ew, eh = (box[0], box[1]) if box else (info.width, info.height)
+        aw, ah = full_width_size(ew, eh)
+        key = f"colorkey={ad.key_color}:{ad.similarity}:{ad.blend},despill=type=blue," if ad.key_color else ""
         chains += [
-            f"[1:v]colorkey={ad.key_color}:{ad.similarity}:{ad.blend},despill=type=blue,"
-            f"scale={ad.width}:-2,setpts=PTS-STARTPTS+{t0:.3f}/TB[ad]",
+            f"[1:v]{crop}{key}scale={aw}:{ah},setsar=1,setpts=PTS-STARTPTS+{t0:.3f}/TB[ad]",
             "[base][ad]overlay=(W-w)/2:(H-h)/2:eof_action=pass[withad]",
         ]
         video = "[withad]"
-        if has_audio(ad.file):
-            delay = int(t0 * 1000)
-            if has_audio(src):
-                chains += [
-                    f"[0:a]volume=0.3:enable='between(t,{t0:.3f},{t0 + ad_dur:.3f})'[ma]",
-                    f"[1:a]adelay={delay}:all=1[aa]",
-                    "[ma][aa]amix=inputs=2:duration=first:normalize=0[aout]",
-                ]
-            else:
-                chains.append(f"[1:a]adelay={delay}:all=1,apad[aout]")
-            audio_map = ["-map", "[aout]"]
     chains.append(f"{video}ass={ass_file.name}:fontsdir={fonts_dir.resolve()},fps=30,format=yuv420p[v]")
     _run([
         "ffmpeg", "-y",
