@@ -108,16 +108,17 @@ def test_ad_is_centred_in_time():
     assert ad_start(3, 5) == 0.0
 
 
-def test_ad_crop_and_full_width():
-    from bot.ads import crop_box, full_width_size
+def test_ad_full_width_no_crop():
+    from bot.ads import MIN_AREA, full_width_size
     from bot.subtitles import OUT_H, OUT_W
 
-    # The BubaVPN banner (1282x552) is cropped and stretched to the full width at >=25%.
-    box = crop_box(1282, 552)
-    ew, eh = (box[0], box[1]) if box else (1282, 552)
-    w, h = full_width_size(ew, eh)
-    assert w == OUT_W                         # edge to edge
-    assert w * h / (OUT_W * OUT_H) >= 0.25     # rule 3.2
+    # The BubaVPN banner (1282x552) is laid full width, no side crop, stretched to clear 25%.
+    w, h = full_width_size(1282, 552)
+    assert w == OUT_W                                  # edge to edge, no gaps / no crop
+    assert w * h / (OUT_W * OUT_H) >= MIN_AREA          # rule 3.2, with margin
+    assert w * h / (OUT_W * OUT_H) >= 0.29              # comfortably above the 25% border
+    # A naturally tall banner keeps its own (bigger) height instead of being shrunk to the target.
+    assert full_width_size(1000, 1000)[1] == 1080
 
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")

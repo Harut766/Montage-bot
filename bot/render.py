@@ -55,12 +55,14 @@ def render_clip(
 ) -> None:
     """Blurred copy of the frame as a 9:16 background, the original on top, subtitles burned in.
 
-    With `ad`, it is laid EDGE TO EDGE (full screen width), centred, in the middle of the clip,
-    covering ~27% of the screen (contest rule 3.2). A chromakey background is removed only when the
-    ad defines one. The clip keeps its own audio so the voice-over stays clearly audible (rule 2.3).
+    With `ad`, it is laid EDGE TO EDGE (full screen width, no side crop), centred, in the middle of
+    the clip, covering ~30% of the screen (contest rule 3.2). A chromakey background is removed only
+    when the ad defines one. The clip keeps its own audio at full volume so the voice-over stays
+    clearly audible (rule 2.3); the banner's own audio is mixed in softly during its window, and it
+    carries the sound on its own when the source clip has none — so the result is never silent.
     The ASS file is referenced by a bare name relative to its directory to avoid filter-escaping issues.
     """
-    from .ads import crop_box, full_width_size
+    from .ads import full_width_size
 
     duration = end - start
     inputs = ["-ss", f"{start:.3f}", "-t", f"{duration:.3f}", "-i", str(src.resolve())]
@@ -77,16 +79,27 @@ def render_clip(
         inputs += ["-i", str(ad.file.resolve())]
         info = probe(ad.file)
         t0 = ad_start(duration, info.duration)
-        box = crop_box(info.width, info.height)
-        crop = f"crop={box[0]}:{box[1]}:{box[2]}:{box[3]}," if box else ""
-        ew, eh = (box[0], box[1]) if box else (info.width, info.height)
-        aw, ah = full_width_size(ew, eh)
+        aw, ah = full_width_size(info.width, info.height)
         key = f"colorkey={ad.key_color}:{ad.similarity}:{ad.blend},despill=type=blue," if ad.key_color else ""
         chains += [
-            f"[1:v]{crop}{key}scale={aw}:{ah},setsar=1,setpts=PTS-STARTPTS+{t0:.3f}/TB[ad]",
+            f"[1:v]{key}scale={aw}:{ah},setsar=1,setpts=PTS-STARTPTS+{t0:.3f}/TB[ad]",
             "[base][ad]overlay=(W-w)/2:(H-h)/2:eof_action=pass[withad]",
         ]
         video = "[withad]"
+        if has_audio(ad.file):
+            delay = int(t0 * 1000)
+            ad_end = t0 + info.duration
+            if has_audio(src):
+                # Voice stays near full volume; the banner's audio is mixed in softly in its window.
+                chains += [
+                    f"[0:a]volume=0.8:enable='between(t,{t0:.3f},{ad_end:.3f})'[sa]",
+                    f"[1:a]volume=0.4,adelay={delay}|{delay}[ba]",
+                    "[sa][ba]amix=inputs=2:duration=first:normalize=0,alimiter=limit=0.95[aout]",
+                ]
+            else:
+                # Source clip has no sound at all — carry the banner's audio so it is never silent.
+                chains.append(f"[1:a]adelay={delay}|{delay}[aout]")
+            audio_map = ["-map", "[aout]"]
     chains.append(f"{video}ass={ass_file.name}:fontsdir={fonts_dir.resolve()},fps=30,format=yuv420p[v]")
     _run([
         "ffmpeg", "-y",

@@ -6,12 +6,11 @@ from .subtitles import OUT_H, OUT_W
 
 ADS_DIR = Path(__file__).resolve().parent.parent / "ads"
 
-# Rule 3.2: the ad must cover at least 25% of the screen; aim higher (checker has ±2 p.p. error).
+# Rule 3.2: the ad must cover at least 25% of the screen. Aim well above the floor — the BUBA
+# checker rounds/estimates and warns when the area is "близко к границе", so 30% leaves room.
 MIN_AREA = 0.25
-TARGET_AREA = 0.27
-# A too-wide ad is centre-cropped to this aspect so it fills TARGET_AREA at full screen width.
-TARGET_ASPECT = OUT_W / (TARGET_AREA * OUT_H)
-MAX_CROP_FRAC = 0.15
+TARGET_AREA = 0.30
+# Never let the banner grow taller than this share of the screen.
 MAX_H_FRAC = 0.72
 
 
@@ -36,21 +35,12 @@ def ad_start(clip_duration: float, ad_duration: float) -> float:
     return max(0.0, (clip_duration - ad_duration) / 2)
 
 
-def crop_box(bw: int, bh: int) -> tuple[int, int, int, int] | None:
-    """Horizontal centre-crop so the ad can fill TARGET_AREA at full width, or None if not needed."""
-    if bw / bh <= TARGET_ASPECT + 1e-3:
-        return None
-    cw = max(bh * TARGET_ASPECT, bw * (1 - MAX_CROP_FRAC))
-    cw = min(int(cw) // 2 * 2, bw)
-    return cw, bh, (bw - cw) // 2, 0
-
-
 def full_width_size(bw: int, bh: int) -> tuple[int, int]:
-    """Scale the (already cropped) ad to the full screen width — edge to edge."""
+    """Scale the ad to the FULL screen width — edge to edge, no side crop (so the checker sees no
+    gaps and no 'обрезка'). If its natural height at full width falls under TARGET_AREA, it is
+    stretched vertically up to the target; a naturally taller banner keeps its own height."""
     w = OUT_W
-    h = round(w * bh / bw)
-    max_h = int(MAX_H_FRAC * OUT_H)
-    if h > max_h:
-        h = max_h
-        w = round(h * bw / bh)
+    natural_h = round(w * bh / bw)
+    target_h = round(TARGET_AREA * OUT_H)
+    h = min(max(natural_h, target_h), int(MAX_H_FRAC * OUT_H))
     return max(2, w // 2 * 2), max(2, h // 2 * 2)
