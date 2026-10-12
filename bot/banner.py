@@ -5,13 +5,15 @@ from pathlib import Path
 
 from .subtitles import OUT_H, OUT_W
 
-# Rule 3.2: banner covers at least 25% of the screen.
+# Rule 3.2: banner must cover at least 25% of the screen.
 BANNER_AREA = 0.25
-# A banner may be scaled up to the full screen width and this fraction of its height.
+# The checker estimates area with ±2 p.p. error, so aim a bit higher so it never reads below 25%.
+CROP_TARGET_AREA = 0.27
+# A banner is always stretched to the full screen width ("от края до края"); this caps its height.
 MAX_W_FRAC = 1.0
 MAX_H_FRAC = 0.72
-# Widest a banner can be and still fill 25% at full screen width; wider ones are side-cropped to this.
-TARGET_ASPECT = OUT_W / (BANNER_AREA * OUT_H)
+# Widest a banner can be and still fill CROP_TARGET_AREA at full width; wider ones are side-cropped to this.
+TARGET_ASPECT = OUT_W / (CROP_TARGET_AREA * OUT_H)
 # Never crop away more than this fraction of the banner width (avoid cutting real content).
 MAX_CROP_FRAC = 0.15
 # How long a banner stays on screen when the source is a still image (animated files play their own length).
@@ -88,16 +90,18 @@ def effective_size(bw: int, bh: int) -> tuple[int, int]:
 
 
 def scaled_size(bw: int, bh: int) -> tuple[int, int]:
-    """Scale the banner to at least BANNER_AREA of the screen, keeping aspect.
+    """Scale the (already side-cropped) banner to the FULL screen width — edge to edge.
 
-    A very wide banner cannot reach 25% within the screen width; then it is scaled as large as
-    it fits (max coverage). `covers_enough` reports whether the 25% rule is actually met.
+    Height follows the aspect; it is only reduced if it would exceed MAX_H_FRAC of the screen.
     """
-    s_area = math.sqrt(BANNER_AREA * OUT_W * OUT_H / (bw * bh))
-    s_fit = min(MAX_W_FRAC * OUT_W / bw, MAX_H_FRAC * OUT_H / bh)
-    s = min(s_area, s_fit)
-    w = max(2, int(round(bw * s)) // 2 * 2)
-    h = max(2, int(round(bh * s)) // 2 * 2)
+    w = int(MAX_W_FRAC * OUT_W)
+    h = round(w * bh / bw)
+    max_h = int(MAX_H_FRAC * OUT_H)
+    if h > max_h:
+        h = max_h
+        w = round(h * bw / bh)
+    w = max(2, w // 2 * 2)
+    h = max(2, h // 2 * 2)
     return w, h
 
 
