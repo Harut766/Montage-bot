@@ -121,6 +121,33 @@ def test_ad_full_width_no_crop():
     assert full_width_size(1000, 1000)[1] == 1080
 
 
+def test_outfit_compose_geometry(monkeypatch):
+    import io
+    import sys
+    import types
+
+    from PIL import Image
+
+    # Stub rembg so the layout is tested without downloading the 170 MB model.
+    stub = types.ModuleType("rembg")
+    stub.new_session = lambda name: object()
+    stub.remove = lambda data, session=None: data  # already a PNG with alpha
+    monkeypatch.setitem(sys.modules, "rembg", stub)
+
+    from bot import outfit
+
+    s = outfit.LookSession()
+    s.background = Image.new("RGB", (800, 600), (200, 180, 160))
+    s.items["top"] = Image.new("RGB", (400, 500), (50, 80, 200))
+    s.items["shoes"] = Image.new("RGB", (300, 200), (200, 50, 50))
+    data = outfit.compose_look(s)
+    out = Image.open(io.BytesIO(data))
+    assert out.size == (outfit.CANVAS_W, outfit.CANVAS_H)
+    assert out.mode == "RGB"
+    # Every category has a position and a draw slot.
+    assert set(outfit.CATEGORIES) == set(outfit.LAYOUT) == set(outfit.DRAW_ORDER)
+
+
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
 def test_render_with_ad_full_width(tmp_path: Path):
     src = tmp_path / "src.mp4"

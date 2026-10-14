@@ -21,7 +21,7 @@ from aiogram.types import (
     Message,
 )
 
-from . import pipeline
+from . import outfit, pipeline
 from .ads import ADS
 from .cleanup import sweep_tg_storage
 from .config import Config
@@ -93,20 +93,41 @@ async def no_access(message: Message) -> None:
 @router.message(CommandStart())
 async def start(message: Message) -> None:
     await message.answer(
-        "Привет! Пришли видео (файлом, до 2 ГБ) или ссылку на него.\n"
-        "Я нарежу его на вертикальные ролики для TikTok с субтитрами.\n\n"
-        "/cancel — отменить обработку"
+        "Привет! Что сделаем?\n\n"
+        "🎬 <b>Видео в ролики</b> — нарежу длинное видео на вертикальные клипы для TikTok "
+        "(субтитры, реклама, «Часть N»).\n"
+        "👕 <b>Собрать Outfit</b> — соберу flatlay-лук из фото вещей на выбранном фоне.",
+        reply_markup=_kb([[("🎬 Видео в ролики", "app:video"), ("👕 Собрать Outfit", "app:outfit")]]),
     )
+
+
+@router.callback_query(F.data.startswith("app:"))
+async def on_app(call: CallbackQuery) -> None:
+    choice = call.data.split(":")[1]
+    if choice == "video":
+        pending.pop(call.message.chat.id, None)
+        outfit.cancel_session(call.message.chat.id)
+        await call.message.edit_text(
+            "🎬 Пришли видео (файлом, до 2 ГБ) или ссылку на него.\n/cancel — отменить."
+        )
+    else:
+        pending.pop(call.message.chat.id, None)
+        await call.message.edit_text("👕 Собираем лук!")
+        await outfit.start_session(call.message)
+    await call.answer()
 
 
 @router.message(Command("cancel", "stop"))
 async def cancel(message: Message) -> None:
     pending.pop(message.chat.id, None)
+    outfit_cancelled = outfit.cancel_session(message.chat.id)
     jobs = [j for j in [current, *waiting] if j and j.chat_id == message.chat.id and not j.cancelled]
     for j in jobs:
         j.cancelled = True
     if jobs:
         await message.answer("⛔ Отменяю. Текущий шаг доделается, дальше обработка остановится.")
+    elif outfit_cancelled:
+        await message.answer("❌ Лук отменён. /outfit — начать заново.")
     else:
         await message.answer("Сейчас нечего отменять.")
 
@@ -350,10 +371,15 @@ async def main() -> None:
         session = AiohttpSession(api=TelegramAPIServer.from_base(cfg.telegram_api_url, is_local=True))
     bot = Bot(cfg.bot_token, session=session, default=DefaultBotProperties(parse_mode="HTML"))
     dp = Dispatcher()
-    dp.include_routers(router, denied)
+    # Same whitelist as the video flow; outfit is included first so its photo handler intercepts
+    # photos only while a look is being assembled, otherwise they fall through to the video router.
+    outfit.router.message.filter(allowed)
+    outfit.router.callback_query.filter(allowed)
+    dp.include_routers(outfit.router, router, denied)
     await bot.set_my_commands([
-        BotCommand(command="start", description="Как пользоваться"),
-        BotCommand(command="cancel", description="Отменить обработку"),
+        BotCommand(command="start", description="Видео или Outfit"),
+        BotCommand(command="outfit", description="Собрать flatlay-лук"),
+        BotCommand(command="cancel", description="Отменить"),
     ])
     tasks = [asyncio.create_task(worker(bot)), asyncio.create_task(janitor())]
     try:
