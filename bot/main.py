@@ -40,7 +40,9 @@ SWEEP_MAX_AGE_HOURS = 6
 
 # Facebook links (lives) always go to the YouTube mode.
 FACEBOOK_RE = re.compile(r"^https?://([a-z0-9-]+\.)*(facebook\.com|fb\.watch|fb\.com)/", re.I)
-BG_CAPTIONS = ("фон", "fon", "bg", "background")
+BG_CAPTIONS = ("фон", "фоны", "fon", "bg", "background", "backgrounds")
+# Text that adds a background by URL: a trigger word, an optional «-»/«:» separator, then the link.
+BG_URL_RE = re.compile(r"(?i)^\s*(фон|фоны|fon|bg|background|backgrounds)\s*[-–—:]?\s+https?://")
 BG_SECONDS = 180  # a background loops under each part, a few minutes of footage is plenty
 # How much of a long live to process from the start (0 = the whole video). Lives can run for hours.
 LIVE_CAPS = (("Всё видео", 0), ("30 мин", 1800), ("1 час", 3600), ("1.5 часа", 5400), ("2 часа", 7200))
@@ -236,7 +238,8 @@ async def list_backgrounds(message: Message) -> None:
     text = f"🔥 Фонов загружено: {len(bgs)}\n" if bgs else "Фонов пока нет — сверху и снизу будет размытое видео.\n"
     text += (
         "Добавить: пришли видео (костёр, листья…) с подписью «фон»\n"
-        "или напиши «фон https://youtube.com/…» — скачаю первые 3 минуты.\n"
+        "или напиши «фон <ссылка>» — скачаю первые 3 минуты.\n"
+        "(подойдёт и «bg», «background», можно с тире: «фон - https://…»)\n"
         "/backgrounds_clear — удалить все фоны"
     )
     await message.answer(text)
@@ -266,7 +269,7 @@ async def on_background(message: Message, bot: Bot) -> None:
     await message.answer(f"✅ Фон сохранён. Всего фонов: {len(find_backgrounds(cfg.backgrounds_dir))}")
 
 
-@router.message(F.text.regexp(r"(?i)^\s*(фон|fon|bg)\s+https?://"))
+@router.message(F.text.regexp(BG_URL_RE))
 async def on_background_url(message: Message) -> None:
     url = URL_RE.search(message.text).group(0)
     status = await message.answer("⬇️ Скачиваю фон (первые 3 минуты)…")
