@@ -148,6 +148,50 @@ def test_outfit_compose_geometry(monkeypatch):
     assert set(outfit.CATEGORIES) == set(outfit.LAYOUT) == set(outfit.DRAW_ORDER)
 
 
+def test_pick_percent_range():
+    from bot.live import MAX_PERCENT, MIN_PERCENT, pick_percent
+
+    values = {pick_percent() for _ in range(2000)}
+    assert min(values) > 105 and max(values) <= 130
+    assert MIN_PERCENT in values and MAX_PERCENT in values
+
+
+def _mean_db(p: Path) -> float:
+    r = subprocess.run(["ffmpeg", "-i", str(p), "-af", "volumedetect", "-f", "null", "-"],
+                       capture_output=True, text=True)
+    return float(r.stderr.split("mean_volume:")[1].split("dB")[0])
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg not installed")
+@pytest.mark.parametrize("with_bg", [True, False])
+def test_live_part_vertical_louder_with_background(tmp_path, with_bg):
+    from bot.live import find_backgrounds, has_audio, render_live_part
+
+    src = tmp_path / "src.mp4"
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30:duration=6",
+         "-f", "lavfi", "-i", "sine=frequency=440:duration=6", "-af", "volume=0.3",
+         "-c:v", "libx264", "-c:a", "aac", "-shortest", str(src)],
+        check=True, capture_output=True,
+    )
+    bg_dir = tmp_path / "backgrounds"
+    bg_dir.mkdir()
+    if with_bg:
+        # Shorter than the part: it has to loop.
+        subprocess.run(["ffmpeg", "-y", "-f", "lavfi", "-i", "mandelbrot=size=320x240:rate=30",
+                        "-t", "1.5", str(bg_dir / "fire.mp4")], check=True, capture_output=True)
+    bgs = find_backgrounds(bg_dir)
+    assert len(bgs) == (1 if with_bg else 0)
+    assert has_audio(src)
+    out = tmp_path / "out.mp4"
+    render_live_part(src, 1.0, 5.0, 640, 360, bgs[0] if bgs else None, 130, True, out)
+    info = probe(out)
+    assert (info.width, info.height) == (1080, 1920)
+    assert abs(info.duration - 4.0) < 0.2
+    # +30% amplitude is about +2.3 dB.
+    assert 1.8 < _mean_db(out) - _mean_db(src) < 2.8
+
+
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
 def test_render_with_ad_full_width(tmp_path: Path):
     src = tmp_path / "src.mp4"

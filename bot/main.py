@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import random
 import re
 import shutil
 import uuid
@@ -24,7 +25,9 @@ from aiogram.types import (
 from . import outfit, pipeline
 from .ads import ADS
 from .cleanup import sweep_tg_storage
+from .clips import split_by_time
 from .config import Config
+from .live import LIVE_LENGTHS, find_backgrounds, has_audio, pick_percent, render_live_part
 
 log = logging.getLogger(__name__)
 
@@ -35,11 +38,19 @@ SWEEP_EVERY = 3600
 # Older than any job can run, so a file still being processed is never removed.
 SWEEP_MAX_AGE_HOURS = 6
 
+# Facebook links (lives) always go to the YouTube mode.
+FACEBOOK_RE = re.compile(r"^https?://([a-z0-9-]+\.)*(facebook\.com|fb\.watch|fb\.com)/", re.I)
+BG_CAPTIONS = ("фон", "fon", "bg", "background")
+BG_SECONDS = 180  # a background loops under each part, a few minutes of footage is plenty
+# Chats that pressed «📺 Видео для YouTube» and are now expected to send a link or a file.
+youtube_chats: set[int] = set()
+
 
 MODES = {
     "clips": "✂️ Нарезать на части с субтитрами",
     "full": "📝 Только субтитры, не резать",
     "cut": "✂️ Просто нарезать, без субтитров",
+    "youtube": "📺 Видео для YouTube: части по 10/15/20 мин, фон, громче",
 }
 
 
@@ -65,8 +76,9 @@ current: Job | None = None
 
 
 def _fmt(t: float) -> str:
-    m, s = divmod(int(t), 60)
-    return f"{m:02d}:{s:02d}"
+    h, rest = divmod(int(t), 3600)
+    m, s = divmod(rest, 60)
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
 
 
 def _kb(rows: list[list[tuple[str, str]]]) -> InlineKeyboardMarkup:
@@ -96,22 +108,33 @@ async def start(message: Message) -> None:
         "Привет! Что сделаем?\n\n"
         "🎬 <b>Видео в ролики</b> — нарежу длинное видео на вертикальные клипы для TikTok "
         "(субтитры, реклама, «Часть N»).\n"
-        "👕 <b>Собрать Outfit</b> — соберу flatlay-лук из фото вещей на выбранном фоне.",
-        reply_markup=_kb([[("🎬 Видео в ролики", "app:video"), ("👕 Собрать Outfit", "app:outfit")]]),
+        "👕 <b>Собрать Outfit</b> — соберу flatlay-лук из фото вещей на выбранном фоне.\n"
+        "📺 <b>Видео для YouTube</b> — порежу лайв на части по 10/15/20 мин, сверху и снизу фон, звук громче.\n",
+        reply_markup=_kb([
+            [("🎬 Видео в ролики", "app:video"), ("👕 Собрать Outfit", "app:outfit")],
+            [("📺 Видео для YouTube", "app:youtube")],
+        ]),
     )
 
 
 @router.callback_query(F.data.startswith("app:"))
 async def on_app(call: CallbackQuery) -> None:
     choice = call.data.split(":")[1]
+    pending.pop(call.message.chat.id, None)
+    youtube_chats.discard(call.message.chat.id)
     if choice == "video":
-        pending.pop(call.message.chat.id, None)
         outfit.cancel_session(call.message.chat.id)
         await call.message.edit_text(
             "🎬 Пришли видео (файлом, до 2 ГБ) или ссылку на него.\n/cancel — отменить."
         )
+    elif choice == "youtube":
+        outfit.cancel_session(call.message.chat.id)
+        youtube_chats.add(call.message.chat.id)
+        await call.message.edit_text(
+            "📺 Пришли ссылку на видео (Facebook, YouTube…) или видео файлом.\n"
+            "Фоны: /backgrounds\n/cancel — отменить."
+        )
     else:
-        pending.pop(call.message.chat.id, None)
         await call.message.edit_text("👕 Собираем лук!")
         await outfit.start_session(call.message)
     await call.answer()
@@ -120,6 +143,7 @@ async def on_app(call: CallbackQuery) -> None:
 @router.message(Command("cancel", "stop"))
 async def cancel(message: Message) -> None:
     pending.pop(message.chat.id, None)
+    youtube_chats.discard(message.chat.id)
     outfit_cancelled = outfit.cancel_session(message.chat.id)
     jobs = [j for j in [current, *waiting] if j and j.chat_id == message.chat.id and not j.cancelled]
     for j in jobs:
@@ -133,7 +157,8 @@ async def cancel(message: Message) -> None:
 
 
 def _mode_kb(job: Job) -> InlineKeyboardMarkup:
-    rows = [[(title, f"mode:{code}")] for code, title in MODES.items()]
+    # «youtube» is its own top-level button, not part of the video-mode menu.
+    rows = [[(title, f"mode:{code}")] for code, title in MODES.items() if code != "youtube"]
     # Ad toggles sit under the modes: tap to switch on/off, then pick a mode.
     for code, ad in ADS.items():
         mark = "✅" if job.ad == code else "⬜️"
@@ -160,6 +185,22 @@ async def _ask_language(message: Message) -> None:
     )
 
 
+async def _ask_live_length(message: Message, edit: bool) -> None:
+    text = "⏱ По сколько минут резать?"
+    kb = _kb([[(f"{s // 60} минут", f"livelen:{s}") for s in LIVE_LENGTHS]])
+    if edit:
+        await message.edit_text(text, reply_markup=kb)
+    else:
+        await message.answer(text, reply_markup=kb)
+
+
+async def _ask_youtube(message: Message, job: Job) -> None:
+    youtube_chats.discard(message.chat.id)
+    job.mode = "youtube"
+    pending[message.chat.id] = job
+    await _ask_live_length(message, edit=False)
+
+
 async def _enqueue(call: CallbackQuery, job: Job) -> None:
     pending.pop(call.message.chat.id, None)
     ahead = len(waiting) + (current is not None)
@@ -174,16 +215,73 @@ async def _enqueue(call: CallbackQuery, job: Job) -> None:
     await call.message.edit_text(text)
 
 
+@router.message(Command("backgrounds"))
+async def list_backgrounds(message: Message) -> None:
+    bgs = find_backgrounds(cfg.backgrounds_dir)
+    text = f"🔥 Фонов загружено: {len(bgs)}\n" if bgs else "Фонов пока нет — сверху и снизу будет размытое видео.\n"
+    text += (
+        "Добавить: пришли видео (костёр, листья…) с подписью «фон»\n"
+        "или напиши «фон https://youtube.com/…» — скачаю первые 3 минуты.\n"
+        "/backgrounds_clear — удалить все фоны"
+    )
+    await message.answer(text)
+
+
+@router.message(Command("backgrounds_clear"))
+async def clear_backgrounds(message: Message) -> None:
+    for p in find_backgrounds(cfg.backgrounds_dir):
+        p.unlink(missing_ok=True)
+    await message.answer("🗑 Все фоны удалены.")
+
+
+@router.message(
+    (F.video | F.document.mime_type.startswith("video/") | F.animation)
+    & F.func(lambda m: (m.caption or "").strip().lower() in BG_CAPTIONS)
+)
+async def on_background(message: Message, bot: Bot) -> None:
+    media = message.video or message.animation or message.document
+    file = await bot.get_file(media.file_id)
+    cfg.backgrounds_dir.mkdir(parents=True, exist_ok=True)
+    dst = cfg.backgrounds_dir / f"bg_{uuid.uuid4().hex[:8]}{Path(file.file_path).suffix or '.mp4'}"
+    local = Path(file.file_path)
+    if cfg.telegram_api_url and local.is_absolute() and local.exists():
+        await asyncio.to_thread(shutil.copyfile, local, dst)
+    else:
+        await bot.download_file(file.file_path, dst, timeout=UPLOAD_TIMEOUT)
+    await message.answer(f"✅ Фон сохранён. Всего фонов: {len(find_backgrounds(cfg.backgrounds_dir))}")
+
+
+@router.message(F.text.regexp(r"(?i)^\s*(фон|fon|bg)\s+https?://"))
+async def on_background_url(message: Message) -> None:
+    url = URL_RE.search(message.text).group(0)
+    status = await message.answer("⬇️ Скачиваю фон (первые 3 минуты)…")
+    try:
+        await asyncio.to_thread(download_background, url, cfg.backgrounds_dir, cfg.cookies_file)
+    except Exception as e:
+        log.exception("background download failed")
+        await status.edit_text(f"❌ Не удалось скачать фон: {e}", parse_mode=None)
+        return
+    await status.edit_text(f"✅ Фон сохранён. Всего фонов: {len(find_backgrounds(cfg.backgrounds_dir))}")
+
+
 @router.message(F.video | F.document.mime_type.startswith("video/"))
 async def on_video(message: Message) -> None:
     media = message.video or message.document
-    await _ask_mode(message, Job(chat_id=message.chat.id, file_id=media.file_id))
+    job = Job(chat_id=message.chat.id, file_id=media.file_id)
+    if message.chat.id in youtube_chats:
+        await _ask_youtube(message, job)
+        return
+    await _ask_mode(message, job)
 
 
 @router.message(F.text.regexp(URL_RE))
 async def on_url(message: Message) -> None:
     url = URL_RE.search(message.text).group(0)
-    await _ask_mode(message, Job(chat_id=message.chat.id, url=url))
+    job = Job(chat_id=message.chat.id, url=url)
+    if message.chat.id in youtube_chats or FACEBOOK_RE.match(url):
+        await _ask_youtube(message, job)
+        return
+    await _ask_mode(message, job)
 
 
 @router.message()
@@ -233,6 +331,17 @@ async def on_language(call: CallbackQuery) -> None:
     await call.answer()
 
 
+@router.callback_query(F.data.startswith("livelen:"))
+async def on_live_length(call: CallbackQuery) -> None:
+    job = pending.get(call.message.chat.id)
+    if not job or job.mode != "youtube":
+        await call.answer("Сначала пришли видео", show_alert=True)
+        return
+    job.target = int(call.data.split(":")[1])
+    await _enqueue(call, job)
+    await call.answer()
+
+
 @router.callback_query(F.data.startswith("ad:"))
 async def on_ad(call: CallbackQuery) -> None:
     job = pending.get(call.message.chat.id)
@@ -278,6 +387,26 @@ def download_url(url: str, work: Path, cookies_file: Path) -> Path:
     return next(work.glob("source.*"))
 
 
+def download_background(url: str, folder: Path, cookies_file: Path) -> None:
+    """Ambient videos are often hours long: only the first BG_SECONDS are downloaded, picture only."""
+    import yt_dlp
+    from yt_dlp.utils import download_range_func
+
+    folder.mkdir(parents=True, exist_ok=True)
+    opts = {
+        "outtmpl": str(folder / f"bg_{uuid.uuid4().hex[:8]}.%(ext)s"),
+        "format": "bv*[height<=1080][ext=mp4]/bv*[height<=1080]/b[height<=1080]/b",
+        "merge_output_format": "mp4",
+        "download_ranges": download_range_func(None, [(0, BG_SECONDS)]),
+        "quiet": True,
+        "noplaylist": True,
+    }
+    if cookies_file.is_file():
+        opts["cookiefile"] = str(cookies_file)
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        ydl.download([url])
+
+
 async def process(bot: Bot, job: Job) -> None:
     status = await bot.send_message(job.chat_id, "⬇️ Загружаю видео…")
 
@@ -306,6 +435,9 @@ async def process(bot: Bot, job: Job) -> None:
         sent = 0
         if job.cancelled:
             raise pipeline.Cancelled
+        if job.mode == "youtube":
+            await send_live(bot, job, src, work, progress)
+            return
         ad = ADS.get(job.ad) if job.ad else None
         async for r in pipeline.run(
             cfg, src, work, job.mode, job.target, job.language, progress, lambda: job.cancelled, ad
@@ -338,6 +470,35 @@ async def process(bot: Bot, job: Job) -> None:
         shutil.rmtree(work, ignore_errors=True)
         if from_server and src:
             src.unlink(missing_ok=True)
+
+
+async def send_live(bot: Bot, job: Job, src: Path, work: Path, progress) -> None:
+    info = await asyncio.to_thread(pipeline.probe, src)
+    clips = split_by_time(info.duration, job.target)
+    audio = await asyncio.to_thread(has_audio, src)
+    backgrounds = find_backgrounds(cfg.backgrounds_dir)
+    if not backgrounds:
+        await progress("⚠️ Фонов нет — сверху и снизу будет размытое видео. Добавить: видео с подписью «фон» или «фон ссылка».")
+    total = len(clips)
+    for n, clip in enumerate(clips, start=1):
+        if job.cancelled:
+            raise pipeline.Cancelled
+        percent = pick_percent()
+        await progress(f"🎬 Рендерю часть {n}/{total}…")
+        out = work / f"live_{n:02d}.mp4"
+        bg = random.choice(backgrounds) if backgrounds else None
+        await asyncio.to_thread(
+            render_live_part, src, clip.start, clip.end, info.width, info.height, bg, percent, audio, out
+        )
+        caption = f"Часть {n}/{total} · {_fmt(clip.start)}–{_fmt(clip.end)}"
+        if audio:
+            caption += f" · 🔊 {percent}%"
+        await bot.send_video(
+            job.chat_id, FSInputFile(out), caption=caption, width=1080, height=1920,
+            duration=int(clip.duration), supports_streaming=True, request_timeout=UPLOAD_TIMEOUT,
+        )
+        out.unlink(missing_ok=True)
+    await progress(f"✅ Готово! Частей: {total}")
 
 
 async def worker(bot: Bot) -> None:
@@ -377,8 +538,9 @@ async def main() -> None:
     outfit.router.callback_query.filter(allowed)
     dp.include_routers(outfit.router, router, denied)
     await bot.set_my_commands([
-        BotCommand(command="start", description="Видео или Outfit"),
+        BotCommand(command="start", description="Видео, Outfit или YouTube"),
         BotCommand(command="outfit", description="Собрать flatlay-лук"),
+        BotCommand(command="backgrounds", description="Фоны для YouTube-видео"),
         BotCommand(command="cancel", description="Отменить"),
     ])
     tasks = [asyncio.create_task(worker(bot)), asyncio.create_task(janitor())]
