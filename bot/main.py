@@ -521,7 +521,8 @@ async def send_live(bot: Bot, job: Job, src: Path, work: Path, progress) -> None
         if job.cancelled:
             raise pipeline.Cancelled
         percent = pick_percent()
-        await progress(f"🎬 Рендерю часть {n}/{total}…")
+        # One 1080x1920 part takes a few minutes on CPU, so say it is not stuck.
+        await progress(f"🎬 Рендерю часть {n}/{total}… (1080×1920 на CPU — пара минут на часть, не завис)")
         out = work / f"live_{n:02d}.mp4"
         bg = random.choice(backgrounds) if backgrounds else None
         await asyncio.to_thread(
