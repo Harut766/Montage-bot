@@ -27,6 +27,8 @@ class Config:
     cookies_file: Path
     # Animated banner (banner.mp4/gif/…) overlaid on every clip per the contest rules; file or folder.
     banner_path: Path
+    # Ambient background videos (campfire, leaves, …) for live mode; one is picked at random per part.
+    backgrounds_dir: Path
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -41,4 +43,5 @@ class Config:
             fonts_dir=Path(os.environ.get("FONTS_DIR", Path(__file__).resolve().parent.parent / "fonts")),
             cookies_file=Path(os.environ.get("COOKIES_FILE", "/data/cookies.txt")),
             banner_path=Path(os.environ.get("BANNER_PATH", "/data")),
+            backgrounds_dir=Path(os.environ.get("BACKGROUNDS_DIR", "/data/backgrounds")),
         )

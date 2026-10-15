@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import random
 import re
 import shutil
 import uuid
@@ -22,14 +23,15 @@ from aiogram.types import (
 )
 
 from . import pipeline
-from .volume import boost_volume, pick_percent
+from .live import LIVE_LENGTHS, find_backgrounds, has_audio, pick_percent, render_live_part
 from .cleanup import sweep_tg_storage
+from .clips import split_by_time
 from .config import Config
 
 log = logging.getLogger(__name__)
 
 URL_RE = re.compile(r"https?://\S+")
-# Facebook links skip the menu and go straight to the volume boost.
+# Facebook links (lives) skip the menu and go straight to live mode.
 FACEBOOK_RE = re.compile(r"^https?://([a-z0-9-]+\.)*(facebook\.com|fb\.watch|fb\.com)/", re.I)
 LENGTHS = (60, 120, 180)
 UPLOAD_TIMEOUT = 900
@@ -42,7 +44,7 @@ MODES = {
     "clips": "✂️ Нарезать на части с субтитрами",
     "full": "📝 Только субтитры, не резать",
     "cut": "✂️ Просто нарезать, без субтитров",
-    "volume": "🔊 Только сделать громче (105–130%)",
+    "live": "🔥 Лайв: по 10/15/20 мин, фон, громче",
 }
 
 
@@ -67,8 +69,9 @@ current: Job | None = None
 
 
 def _fmt(t: float) -> str:
-    m, s = divmod(int(t), 60)
-    return f"{m:02d}:{s:02d}"
+    h, rest = divmod(int(t), 3600)
+    m, s = divmod(rest, 60)
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
 
 
 def _kb(rows: list[list[tuple[str, str]]]) -> InlineKeyboardMarkup:
@@ -97,7 +100,9 @@ async def start(message: Message) -> None:
     await message.answer(
         "Привет! Пришли видео (файлом, до 2 ГБ) или ссылку на него.\n"
         "Я нарежу его на вертикальные ролики для TikTok с субтитрами.\n"
-        "Ссылку на Facebook-видео сразу делаю громче (случайно 105–130%) и присылаю обратно.\n\n"
+        "Ссылку на Facebook-лайв режу на части по 10/15/20 минут с фоном и громче (106–130%).\n"
+        "Фон (костёр, листья…) — пришли видео с подписью «фон» или напиши «фон ссылка».\n\n"
+        "/backgrounds — сколько фонов загружено\n"
         "/cancel — отменить обработку"
     )
 
@@ -129,6 +134,15 @@ async def _ask_length(message: Message) -> None:
     )
 
 
+async def _ask_live_length(message: Message, edit: bool) -> None:
+    text = "⏱ По сколько минут резать?"
+    kb = _kb([[(f"{s // 60} минут", f"livelen:{s}") for s in LIVE_LENGTHS]])
+    if edit:
+        await message.edit_text(text, reply_markup=kb)
+    else:
+        await message.answer(text, reply_markup=kb)
+
+
 async def _ask_language(message: Message) -> None:
     await message.edit_text(
         "🗣 На каком языке говорят в видео?",
@@ -151,6 +165,62 @@ async def _enqueue(call: CallbackQuery, job: Job) -> None:
     await call.message.edit_text(await _put(job))
 
 
+BG_CAPTIONS = ("фон", "fon", "bg", "background")
+# A background loops under each part, so a few minutes of footage is plenty.
+BG_SECONDS = 180
+
+
+@router.message(Command("backgrounds"))
+async def list_backgrounds(message: Message) -> None:
+    bgs = find_backgrounds(cfg.backgrounds_dir)
+    text = f"🔥 Фонов загружено: {len(bgs)}\n" if bgs else "Фонов пока нет — сверху и снизу будет размытое видео.\n"
+    text += (
+        "Добавить: пришли видео (костёр, листья…) с подписью «фон»\n"
+        "или напиши «фон https://youtube.com/…» — скачаю первые 3 минуты.\n"
+        "/backgrounds_clear — удалить все фоны"
+    )
+    await message.answer(text)
+
+
+@router.message(Command("backgrounds_clear"))
+async def clear_backgrounds(message: Message) -> None:
+    for p in find_backgrounds(cfg.backgrounds_dir):
+        p.unlink(missing_ok=True)
+    await message.answer("🗑 Все фоны удалены.")
+
+
+@router.message(
+    (F.video | F.document.mime_type.startswith("video/") | F.animation)
+    & F.func(lambda m: (m.caption or "").strip().lower() in BG_CAPTIONS)
+)
+async def on_background(message: Message, bot: Bot) -> None:
+    media = message.video or message.animation or message.document
+    file = await bot.get_file(media.file_id)
+    cfg.backgrounds_dir.mkdir(parents=True, exist_ok=True)
+    dst = cfg.backgrounds_dir / f"bg_{uuid.uuid4().hex[:8]}{Path(file.file_path).suffix or '.mp4'}"
+    local = Path(file.file_path)
+    if cfg.telegram_api_url and local.is_absolute() and local.exists():
+        await asyncio.to_thread(shutil.copyfile, local, dst)
+    else:
+        await bot.download_file(file.file_path, dst, timeout=UPLOAD_TIMEOUT)
+    total = len(find_backgrounds(cfg.backgrounds_dir))
+    await message.answer(f"✅ Фон сохранён. Всего фонов: {total}")
+
+
+@router.message(F.text.regexp(r"(?i)^\s*(фон|fon|bg)\s+https?://"))
+async def on_background_url(message: Message) -> None:
+    url = URL_RE.search(message.text).group(0)
+    status = await message.answer("⬇️ Скачиваю фон (первые 3 минуты)…")
+    try:
+        await asyncio.to_thread(download_background, url, cfg.backgrounds_dir, cfg.cookies_file)
+    except Exception as e:
+        log.exception("background download failed")
+        await status.edit_text(f"❌ Не удалось скачать фон: {e}", parse_mode=None)
+        return
+    total = len(find_backgrounds(cfg.backgrounds_dir))
+    await status.edit_text(f"✅ Фон сохранён. Всего фонов: {total}")
+
+
 @router.message(F.video | F.document.mime_type.startswith("video/"))
 async def on_video(message: Message) -> None:
     media = message.video or message.document
@@ -162,8 +232,9 @@ async def on_url(message: Message) -> None:
     url = URL_RE.search(message.text).group(0)
     job = Job(chat_id=message.chat.id, url=url)
     if FACEBOOK_RE.match(url):
-        job.mode = "volume"
-        await message.answer(await _put(job))
+        job.mode = "live"
+        pending[message.chat.id] = job
+        await _ask_live_length(message, edit=False)
         return
     await _ask_mode(message, job)
 
@@ -183,8 +254,8 @@ async def on_mode(call: CallbackQuery) -> None:
     if job.mode == "cut":
         job.language = "cut"
         await _ask_length(call.message)  # cut needs only length
-    elif job.mode == "volume":
-        await _enqueue(call, job)  # nothing to ask
+    elif job.mode == "live":
+        await _ask_live_length(call.message, edit=True)  # live needs only length
     elif job.mode == "full":
         await _ask_language(call.message)  # full video needs only language
     else:
@@ -203,6 +274,17 @@ async def on_length(call: CallbackQuery) -> None:
         await _enqueue(call, job)  # no subtitles, nothing more to ask
     else:
         await _ask_language(call.message)
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("livelen:"))
+async def on_live_length(call: CallbackQuery) -> None:
+    job = pending.get(call.message.chat.id)
+    if not job or job.mode != "live":
+        await call.answer("Сначала пришли видео", show_alert=True)
+        return
+    job.target = int(call.data.split(":")[1])
+    await _enqueue(call, job)
     await call.answer()
 
 
@@ -250,6 +332,26 @@ def download_url(url: str, work: Path, cookies_file: Path) -> Path:
     return next(work.glob("source.*"))
 
 
+def download_background(url: str, folder: Path, cookies_file: Path) -> None:
+    """Ambient videos are often hours long: only the first BG_SECONDS are downloaded, picture only."""
+    import yt_dlp
+    from yt_dlp.utils import download_range_func
+
+    folder.mkdir(parents=True, exist_ok=True)
+    opts = {
+        "outtmpl": str(folder / f"bg_{uuid.uuid4().hex[:8]}.%(ext)s"),
+        "format": "bv*[height<=1080][ext=mp4]/bv*[height<=1080]/b[height<=1080]/b",
+        "merge_output_format": "mp4",
+        "download_ranges": download_range_func(None, [(0, BG_SECONDS)]),
+        "quiet": True,
+        "noplaylist": True,
+    }
+    if cookies_file.is_file():
+        opts["cookiefile"] = str(cookies_file)
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        ydl.download([url])
+
+
 async def process(bot: Bot, job: Job) -> None:
     status = await bot.send_message(job.chat_id, "⬇️ Загружаю видео…")
 
@@ -278,8 +380,8 @@ async def process(bot: Bot, job: Job) -> None:
         sent = 0
         if job.cancelled:
             raise pipeline.Cancelled
-        if job.mode == "volume":
-            await send_louder(bot, job, src, work, progress)
+        if job.mode == "live":
+            await send_live(bot, job, src, work, progress)
             return
         async for r in pipeline.run(cfg, src, work, job.mode, job.target, job.language, progress, lambda: job.cancelled):
             if job.mode == "full":
@@ -312,24 +414,39 @@ async def process(bot: Bot, job: Job) -> None:
             src.unlink(missing_ok=True)
 
 
-async def send_louder(bot: Bot, job: Job, src: Path, work: Path, progress) -> None:
-    percent = pick_percent()
-    await progress(f"🔊 Делаю громче: {percent}%…")
-    out = work / "louder.mp4"
-    await asyncio.to_thread(boost_volume, src, out, percent)
-    info = await asyncio.to_thread(pipeline.probe, out)
-    await bot.send_video(
-        job.chat_id,
-        FSInputFile(out),
-        caption=f"🔊 Громкость {percent}%",
-        width=info.width,
-        height=info.height,
-        duration=int(info.duration),
-        supports_streaming=True,
-        request_timeout=UPLOAD_TIMEOUT,
-    )
-    out.unlink(missing_ok=True)
-    await progress(f"✅ Готово! Громкость {percent}% (оригинал — 100%)")
+async def send_live(bot: Bot, job: Job, src: Path, work: Path, progress) -> None:
+    info = await asyncio.to_thread(pipeline.probe, src)
+    clips = split_by_time(info.duration, job.target)
+    audio = await asyncio.to_thread(has_audio, src)
+    backgrounds = find_backgrounds(cfg.backgrounds_dir)
+    if not backgrounds:
+        await progress("⚠️ Фонов нет — сверху и снизу будет размытое видео. Добавить: видео с подписью «фон» или «фон ссылка».")
+    total = len(clips)
+    for n, clip in enumerate(clips, start=1):
+        if job.cancelled:
+            raise pipeline.Cancelled
+        percent = pick_percent()
+        await progress(f"🎬 Рендерю часть {n}/{total}…")
+        out = work / f"live_{n:02d}.mp4"
+        bg = random.choice(backgrounds) if backgrounds else None
+        await asyncio.to_thread(
+            render_live_part, src, clip.start, clip.end, info.width, info.height, bg, percent, audio, out
+        )
+        caption = f"Часть {n}/{total} · {_fmt(clip.start)}–{_fmt(clip.end)}"
+        if audio:
+            caption += f" · 🔊 {percent}%"
+        await bot.send_video(
+            job.chat_id,
+            FSInputFile(out),
+            caption=caption,
+            width=1080,
+            height=1920,
+            duration=int(clip.duration),
+            supports_streaming=True,
+            request_timeout=UPLOAD_TIMEOUT,
+        )
+        out.unlink(missing_ok=True)
+    await progress(f"✅ Готово! Частей: {total}")
 
 
 async def worker(bot: Bot) -> None:
@@ -367,6 +484,7 @@ async def main() -> None:
     await bot.set_my_commands([
         BotCommand(command="start", description="Как пользоваться"),
         BotCommand(command="cancel", description="Отменить обработку"),
+        BotCommand(command="backgrounds", description="Фоны для лайвов"),
     ])
     tasks = [asyncio.create_task(worker(bot)), asyncio.create_task(janitor())]
     try:
