@@ -18,6 +18,12 @@ def pick_percent() -> int:
     return random.randint(MIN_PERCENT, MAX_PERCENT)
 
 
+def capped_duration(duration: float, limit: int | None) -> float:
+    """How much of the source to cut: the whole thing, or only the first `limit` seconds
+    (lives can run for hours, so the user caps how much is processed)."""
+    return min(duration, limit) if limit else duration
+
+
 def has_audio(src: Path) -> bool:
     out = _run(["ffprobe", "-v", "error", "-select_streams", "a", "-show_entries", "stream=index", "-of", "csv=p=0", str(src)])
     return bool(out.strip())

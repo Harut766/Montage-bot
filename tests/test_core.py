@@ -156,6 +156,17 @@ def test_pick_percent_range():
     assert MIN_PERCENT in values and MAX_PERCENT in values
 
 
+def test_capped_duration_limits_long_lives():
+    from bot.live import capped_duration
+
+    # A 3-hour live capped at 1 hour yields 6 parts of 10 min, not 18.
+    assert capped_duration(10800, 3600) == 3600
+    assert len(split_by_time(capped_duration(10800, 3600), 600)) == 6
+    # No cap (0 → None) or a cap longer than the video keeps the whole thing.
+    assert capped_duration(1200, None) == 1200
+    assert capped_duration(1200, 3600) == 1200
+
+
 def _mean_db(p: Path) -> float:
     r = subprocess.run(["ffmpeg", "-i", str(p), "-af", "volumedetect", "-f", "null", "-"],
                        capture_output=True, text=True)

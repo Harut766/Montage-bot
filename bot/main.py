@@ -27,7 +27,7 @@ from .ads import ADS
 from .cleanup import sweep_tg_storage
 from .clips import split_by_time
 from .config import Config
-from .live import LIVE_LENGTHS, find_backgrounds, has_audio, pick_percent, render_live_part
+from .live import LIVE_LENGTHS, capped_duration, find_backgrounds, has_audio, pick_percent, render_live_part
 
 log = logging.getLogger(__name__)
 
@@ -42,6 +42,8 @@ SWEEP_MAX_AGE_HOURS = 6
 FACEBOOK_RE = re.compile(r"^https?://([a-z0-9-]+\.)*(facebook\.com|fb\.watch|fb\.com)/", re.I)
 BG_CAPTIONS = ("фон", "fon", "bg", "background")
 BG_SECONDS = 180  # a background loops under each part, a few minutes of footage is plenty
+# How much of a long live to process from the start (0 = the whole video). Lives can run for hours.
+LIVE_CAPS = (("Всё видео", 0), ("30 мин", 1800), ("1 час", 3600), ("1.5 часа", 5400), ("2 часа", 7200))
 # Chats that pressed «📺 Видео для YouTube» and are now expected to send a link or a file.
 youtube_chats: set[int] = set()
 
@@ -63,6 +65,8 @@ class Job:
     target: int | None = None
     language: str | None = None
     ad: str | None = None
+    # YouTube mode: process only the first `limit` seconds of a long live (None = the whole video).
+    limit: int | None = None
     cancelled: bool = False
 
 
@@ -194,6 +198,15 @@ async def _ask_live_length(message: Message, edit: bool) -> None:
         await message.answer(text, reply_markup=kb)
 
 
+async def _ask_live_cap(message: Message) -> None:
+    buttons = [(label, f"livecap:{sec}") for label, sec in LIVE_CAPS]
+    rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]  # two per row
+    await message.edit_text(
+        "✂️ Сколько видео резать? (лайв бывает на 3 часа)\nВыбери, сколько брать с начала:",
+        reply_markup=_kb(rows),
+    )
+
+
 async def _ask_youtube(message: Message, job: Job) -> None:
     youtube_chats.discard(message.chat.id)
     job.mode = "youtube"
@@ -209,6 +222,8 @@ async def _enqueue(call: CallbackQuery, job: Job) -> None:
     text = f"{MODES[job.mode]}"
     if job.ad:
         text += f"\n📢 Реклама: {ADS[job.ad].title}"
+    if job.limit:
+        text += f"\n✂️ Беру первые {_fmt(job.limit)}"
     text += "\n\n✅ Принято!"
     if ahead:
         text += f"\n⏳ Видео в очереди: сначала закончу предыдущие ({ahead})."
@@ -338,6 +353,18 @@ async def on_live_length(call: CallbackQuery) -> None:
         await call.answer("Сначала пришли видео", show_alert=True)
         return
     job.target = int(call.data.split(":")[1])
+    await _ask_live_cap(call.message)  # then ask how much of the live to process
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("livecap:"))
+async def on_live_cap(call: CallbackQuery) -> None:
+    job = pending.get(call.message.chat.id)
+    if not job or job.mode != "youtube" or not job.target:
+        await call.answer("Сначала пришли видео", show_alert=True)
+        return
+    sec = int(call.data.split(":")[1])
+    job.limit = sec or None  # 0 = the whole video
     await _enqueue(call, job)
     await call.answer()
 
@@ -359,7 +386,9 @@ async def on_ad(call: CallbackQuery) -> None:
 async def fetch_source(bot: Bot, job: Job, work: Path) -> tuple[Path, bool]:
     """Returns the source path and whether it lives in the Bot API server storage (to delete afterwards)."""
     if job.url:
-        return await asyncio.to_thread(download_url, job.url, work, cfg.cookies_file), False
+        # In YouTube mode only the first job.limit seconds are used, so don't pull the whole 3-hour live.
+        max_seconds = job.limit if job.mode == "youtube" else None
+        return await asyncio.to_thread(download_url, job.url, work, cfg.cookies_file, max_seconds), False
     file = await bot.get_file(job.file_id)
     local = Path(file.file_path)
     if cfg.telegram_api_url and local.is_absolute() and local.exists():
@@ -369,7 +398,7 @@ async def fetch_source(bot: Bot, job: Job, work: Path) -> tuple[Path, bool]:
     return dst, False
 
 
-def download_url(url: str, work: Path, cookies_file: Path) -> Path:
+def download_url(url: str, work: Path, cookies_file: Path, max_seconds: int | None = None) -> Path:
     import yt_dlp
 
     opts = {
@@ -382,6 +411,11 @@ def download_url(url: str, work: Path, cookies_file: Path) -> Path:
     # Lets YouTube links that demand "sign in to confirm you're not a bot" download as a logged-in user.
     if cookies_file.is_file():
         opts["cookiefile"] = str(cookies_file)
+    # YouTube mode: grab only the first max_seconds (a 3-hour live is capped by the user).
+    if max_seconds:
+        from yt_dlp.utils import download_range_func
+
+        opts["download_ranges"] = download_range_func(None, [(0, max_seconds)])
     with yt_dlp.YoutubeDL(opts) as ydl:
         ydl.download([url])
     return next(work.glob("source.*"))
@@ -474,7 +508,7 @@ async def process(bot: Bot, job: Job) -> None:
 
 async def send_live(bot: Bot, job: Job, src: Path, work: Path, progress) -> None:
     info = await asyncio.to_thread(pipeline.probe, src)
-    clips = split_by_time(info.duration, job.target)
+    clips = split_by_time(capped_duration(info.duration, job.limit), job.target)
     audio = await asyncio.to_thread(has_audio, src)
     backgrounds = find_backgrounds(cfg.backgrounds_dir)
     if not backgrounds:
