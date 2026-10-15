@@ -67,22 +67,31 @@ class LookSession:
 sessions: dict[int, LookSession] = {}
 # One heavy compose at a time: rembg + the whisper/render pipeline must not run together on a small Mac.
 _compose_lock = asyncio.Lock()
-_rembg_session = None
+_rembg_sessions: dict[str, object] = {}
+
+# Garments are usually photographed worn or held, so plain background removal keeps the hands, body
+# and mannequin. u2net_cloth_seg segments the CLOTHING itself and drops everything else. Shoes and
+# accessories are normal objects, so the general u2net model is enough for them.
+CLOTH_MODEL = "u2net_cloth_seg"
+MODEL_BY_CATEGORY = {"top": CLOTH_MODEL, "bottom": CLOTH_MODEL}
+DEFAULT_MODEL = "u2net"
 
 
 # ---------- image processing ----------
 
-def _remove_background(img: Image.Image) -> Image.Image:
-    """Cut the background out with rembg (u2net); returns an RGBA cut-out."""
-    global _rembg_session
+def _remove_background(img: Image.Image, model: str = DEFAULT_MODEL) -> Image.Image:
+    """Cut the item out with rembg; returns an RGBA cut-out trimmed to its bounding box."""
     from rembg import new_session, remove
 
-    if _rembg_session is None:
-        _rembg_session = new_session("u2net")
+    if model not in _rembg_sessions:
+        _rembg_sessions[model] = new_session(model)
     buf = io.BytesIO()
     img.save(buf, format="PNG")
-    out = remove(buf.getvalue(), session=_rembg_session)
-    return Image.open(io.BytesIO(out)).convert("RGBA")
+    out = remove(buf.getvalue(), session=_rembg_sessions[model])
+    cut = Image.open(io.BytesIO(out)).convert("RGBA")
+    # Trim fully transparent borders so the garment (not the original photo frame) drives its size.
+    bbox = cut.split()[3].getbbox()
+    return cut.crop(bbox) if bbox else cut
 
 
 def _add_shadow(img: Image.Image, offset=(6, 6), blur=12, opacity=80) -> Image.Image:
@@ -121,7 +130,7 @@ def compose_look(session: LookSession) -> bytes:
         if category not in session.items:
             continue
         log.info("outfit: processing %s", category)
-        item = _remove_background(session.items[category])
+        item = _remove_background(session.items[category], MODEL_BY_CATEGORY.get(category, DEFAULT_MODEL))
         bg = _fit_and_place(bg, item, *LAYOUT[category])
     buf = io.BytesIO()
     bg.convert("RGB").save(buf, format="JPEG", quality=95)

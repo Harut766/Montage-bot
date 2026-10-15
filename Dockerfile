@@ -9,8 +9,9 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Pre-download the rembg background-removal model so the first Outfit request is fast.
-RUN python -c "from rembg import new_session; new_session('u2net')"
+# Pre-download the rembg models so the first Outfit request is fast:
+# u2net for objects (shoes, accessories) and u2net_cloth_seg to segment garments off a worn/held photo.
+RUN python -c "from rembg import new_session; new_session('u2net'); new_session('u2net_cloth_seg')"
 
 COPY fonts ./fonts
 COPY ads ./ads
