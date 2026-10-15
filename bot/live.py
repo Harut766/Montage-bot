@@ -92,8 +92,11 @@ def render_live_part(
         "-filter_complex", graph,
         "-map", "[v]", *audio,
         "-t", f"{dur:.3f}",
-        # Parts are 10–20 minutes long: a faster preset keeps hour-long lives from taking all day.
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-profile:v", "high",
+        # Parts are 10–20 minutes long and encoded on CPU: superfast keeps hour-long lives from taking
+        # all day, and the bitrate cap keeps a part well under the 2 GB limit so the upload stays quick
+        # and does not strain memory on a small machine.
+        "-c:v", "libx264", "-preset", "superfast", "-crf", "21",
+        "-maxrate", "7M", "-bufsize", "14M", "-profile:v", "high",
         "-movflags", "+faststart",
         str(out),
     ])

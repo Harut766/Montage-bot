@@ -11,7 +11,7 @@ from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.telegram import TelegramAPIServer
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError
 from aiogram.filters import Command, CommandStart
 from aiogram.types import (
     BotCommand,
@@ -91,6 +91,19 @@ def _kb(rows: list[list[tuple[str, str]]]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[[InlineKeyboardButton(text=t, callback_data=d) for t, d in row] for row in rows]
     )
+
+
+async def send_video_retry(bot: Bot, chat_id: int, path: Path, **kwargs) -> None:
+    """Upload a clip, retrying network errors: after a multi-minute render the keep-alive to the
+    local Bot API server often goes stale, so the first send raises «Server disconnected»."""
+    for attempt in range(4):
+        try:
+            await bot.send_video(chat_id, FSInputFile(path), request_timeout=UPLOAD_TIMEOUT, **kwargs)
+            return
+        except TelegramNetworkError:
+            if attempt == 3:
+                raise
+            await asyncio.sleep(2 ** attempt)  # 1, 2, 4s — enough to reopen the connection
 
 
 # ---------- access ----------
@@ -485,15 +498,15 @@ async def process(bot: Bot, job: Job) -> None:
                 caption = f"Часть {r.part}/{r.total} · {_fmt(r.clip.start)}–{_fmt(r.clip.end)}"
             if r.clip.title:
                 caption += f"\n{r.clip.title}"
-            await bot.send_video(
+            await send_video_retry(
+                bot,
                 job.chat_id,
-                FSInputFile(r.path),
+                r.path,
                 caption=caption,
                 width=1080,
                 height=1920,
                 duration=int(r.clip.duration),
                 supports_streaming=True,
-                request_timeout=UPLOAD_TIMEOUT,
             )
             r.path.unlink(missing_ok=True)
             sent += 1
@@ -531,9 +544,9 @@ async def send_live(bot: Bot, job: Job, src: Path, work: Path, progress) -> None
         caption = f"Часть {n}/{total} · {_fmt(clip.start)}–{_fmt(clip.end)}"
         if audio:
             caption += f" · 🔊 {percent}%"
-        await bot.send_video(
-            job.chat_id, FSInputFile(out), caption=caption, width=1080, height=1920,
-            duration=int(clip.duration), supports_streaming=True, request_timeout=UPLOAD_TIMEOUT,
+        await send_video_retry(
+            bot, job.chat_id, out, caption=caption, width=1080, height=1920,
+            duration=int(clip.duration), supports_streaming=True,
         )
         out.unlink(missing_ok=True)
     await progress(f"✅ Готово! Частей: {total}")
