@@ -5,13 +5,27 @@ import random
 from pathlib import Path
 
 from .render import _run
-from .subtitles import OUT_H, OUT_W, make_layout
+from .subtitles import OUT_H, OUT_W
 
 LIVE_LENGTHS = (600, 900, 1200)
 # Original loudness is 100%; every part gets a random level above 105% and up to 130%.
 MIN_PERCENT = 106
 MAX_PERCENT = 130
 BG_EXTS = (".mp4", ".mov", ".webm", ".mkv", ".gif")
+# The source never fills the whole frame, so an ambient band always shows above and below it —
+# even for an already-vertical source (a Facebook reel) that would otherwise cover the background.
+MAX_FG_FRAC = 0.76
+
+
+def live_fg_size(src_w: int, src_h: int) -> tuple[int, int]:
+    """Size of the centred source: full width, but capped in height so the background stays visible."""
+    w = OUT_W
+    h = round(w * src_h / src_w)
+    max_h = int(MAX_FG_FRAC * OUT_H)
+    if h > max_h:
+        h = max_h
+        w = round(h * src_w / src_h)
+    return max(2, w // 2 * 2), max(2, h // 2 * 2)
 
 
 def pick_percent() -> int:
@@ -48,10 +62,10 @@ def render_live_part(
 ) -> None:
     """The original video centred on a 1080×1920 frame; the background video is looped to fill the rest.
     Without a background, a blurred copy of the frame is used instead."""
-    lay = make_layout(src_w, src_h)
+    fg_w, fg_h = live_fg_size(src_w, src_h)
     dur = end - start
     inputs = ["-ss", f"{start:.3f}", "-t", f"{dur:.3f}", "-i", str(src)]
-    fg = f"[0:v]scale={lay.fg_w}:{lay.fg_h},setsar=1[fg]"
+    fg = f"[0:v]scale={fg_w}:{fg_h},setsar=1[fg]"
     if background:
         inputs += ["-stream_loop", "-1", "-i", str(background)]
         bg = (
@@ -64,7 +78,7 @@ def render_live_part(
             "[0:v]split=2[a][b];"
             "[a]scale=270:480:force_original_aspect_ratio=increase,crop=270:480,"
             f"gblur=sigma=10,eq=brightness=-0.08,scale={OUT_W}:{OUT_H},setsar=1[bg];"
-            f"[b]scale={lay.fg_w}:{lay.fg_h},setsar=1[fg];"
+            f"[b]scale={fg_w}:{fg_h},setsar=1[fg];"
             "[bg][fg]overlay=(W-w)/2:(H-h)/2,fps=30,format=yuv420p[v]"
         )
     audio: list[str] = []

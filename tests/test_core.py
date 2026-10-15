@@ -156,6 +156,18 @@ def test_pick_percent_range():
     assert MIN_PERCENT in values and MAX_PERCENT in values
 
 
+def test_live_fg_size_always_leaves_background():
+    from bot.live import MAX_FG_FRAC, live_fg_size
+    from bot.subtitles import OUT_H, OUT_W
+
+    # A vertical reel must NOT fill the whole height, so the background stays visible.
+    w, h = live_fg_size(720, 1280)
+    assert h <= int(MAX_FG_FRAC * OUT_H) and h < OUT_H
+    assert w <= OUT_W
+    # A horizontal source scales to full width with big bands, unchanged.
+    assert live_fg_size(1920, 1080) == (OUT_W, 608)
+
+
 def test_capped_duration_limits_long_lives():
     from bot.live import capped_duration
 
