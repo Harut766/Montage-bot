@@ -81,8 +81,16 @@ def render_clip(
         info = probe(ad.file)
         times = banner_times(duration, info.duration)
         aw, ah = full_width_size(info.width, info.height)
-        key = f"colorkey={ad.key_color}:{ad.similarity}:{ad.blend},despill=type=blue," if ad.key_color else ""
+        key = (
+            f"colorkey={ad.key_color}:{ad.similarity}:{ad.blend},despill=type={ad.despill_type},"
+            if ad.key_color else ""
+        )
         ad_has_audio = has_audio(ad.file)
+        src_has_audio = has_audio(src)
+        # The clip's own voice-over must stay clearly audible (rule 2.3): keep the source at full
+        # volume and the banner jingle very quiet underneath it. Only when the source is silent
+        # does the banner carry the sound on its own, at a normal level.
+        ad_vol = 0.12 if src_has_audio else 0.85
         prev = "[base]"
         ad_audio: list[str] = []
         # Each banner is a fresh input so the same file can be overlaid at several times.
@@ -97,18 +105,11 @@ def render_clip(
             prev = outlabel
             if ad_has_audio:
                 delay = int(t0 * 1000)
-                chains.append(f"[{idx}:a]volume=0.4,adelay={delay}|{delay}[ba{i}]")
+                chains.append(f"[{idx}:a]volume={ad_vol},adelay={delay}|{delay}[ba{i}]")
                 ad_audio.append(f"[ba{i}]")
         video = prev
         if ad_audio:
-            windows = "+".join(f"between(t,{t:.3f},{t + info.duration:.3f})" for t in times)
-            if has_audio(src):
-                # Voice stays near full volume; each banner's audio is mixed in softly in its window.
-                chains.append(f"[0:a]volume=0.8:enable='{windows}'[sa]")
-                parts = ["[sa]", *ad_audio]
-            else:
-                # Source clip has no sound at all — carry the banners' audio so it is never silent.
-                parts = ad_audio
+            parts = (["[0:a]", *ad_audio] if src_has_audio else ad_audio)
             if len(parts) == 1:
                 chains.append(f"{parts[0]}alimiter=limit=0.95[aout]")
             else:

@@ -226,17 +226,17 @@ def test_banner_times_one_in_the_middle_short_clip():
     assert abs((t + 7.2 / 2) - 50) < 0.01
 
 
-def test_banner_times_one_per_minute_for_long_clip():
+def test_banner_times_two_from_two_minutes():
     from bot.ads import banner_times
 
-    # From 2:00 → one banner in the middle of each full minute (rules 3.3–3.4): 0:30, 1:30, …
+    # From 2:00 → exactly two banners, at 0:30 and 1:30 (NATRIA banner rules, 16 Oct 2026).
     centres = lambda d: [round(t + 7.2 / 2) for t in banner_times(d, 7.2)]
     assert centres(120) == [30, 90]
-    assert centres(180) == [30, 90, 150]
-    assert centres(300) == [30, 90, 150, 210, 270]
+    assert centres(180) == [30, 90]
+    assert centres(300) == [30, 90]
     # Every banner stays fully inside the clip.
-    for t in banner_times(185, 7.2):
-        assert 0 <= t and t + 7.2 <= 185
+    for t in banner_times(125, 7.2):
+        assert 0 <= t and t + 7.2 <= 125
 
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")

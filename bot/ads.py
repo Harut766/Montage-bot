@@ -22,12 +22,18 @@ class Ad:
     key_color: str | None = None
     similarity: float = 0.30
     blend: float = 0.10
+    # Spill-suppression colour for the chromakey ("green" or "blue").
+    despill_type: str = "green"
 
 
 ADS = {
-    # Solid full-frame design — no chromakey, laid edge to edge.
     # NATRIA VPN clipping programme (replaces the closed BubaVPN contest).
-    "natriavpn": Ad("🟩 NATRIA VPN", ADS_DIR / "natriavpn.mp4"),
+    # The banner is delivered on a GREEN screen (0,254,0): the green is keyed out so only the
+    # card floats over the clip (rule 2.8 — no visible chromakey allowed).
+    "natriavpn": Ad(
+        "🟩 NATRIA VPN", ADS_DIR / "natriavpn.mp4",
+        key_color="0x00FE00", similarity=0.22, blend=0.10,
+    ),
 }
 
 
@@ -37,19 +43,16 @@ def ad_start(clip_duration: float, ad_duration: float) -> float:
 
 
 def banner_times(clip_duration: float, ad_duration: float) -> list[float]:
-    """Start offsets for every banner on a clip (NATRIA rules 3.3–3.4):
+    """Start offsets for the banner(s) on a clip (NATRIA banner rules, 16 Oct 2026):
 
     * a clip up to 2:00 — ONE banner exactly in the middle;
-    * a clip from 2:00 — one banner in the middle of each full minute (0:30, 1:30, 2:30 …),
-      i.e. an extra banner for every additional full minute.
+    * a clip from 2:00 — TWO banners, at 0:30 and 1:30.
 
     Each start is clamped so the whole banner stays inside the clip."""
     if clip_duration < 120:
         return [ad_start(clip_duration, ad_duration)]
-    minutes = int(clip_duration // 60)
     times: list[float] = []
-    for k in range(minutes):
-        centre = 30.0 + 60.0 * k  # middle of the k-th minute
+    for centre in (30.0, 90.0):
         t0 = centre - ad_duration / 2
         times.append(max(0.0, min(t0, clip_duration - ad_duration)))
     return times
