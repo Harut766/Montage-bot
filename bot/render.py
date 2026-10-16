@@ -87,10 +87,6 @@ def render_clip(
         )
         ad_has_audio = has_audio(ad.file)
         src_has_audio = has_audio(src)
-        # The clip's own voice-over must stay clearly audible (rule 2.3): keep the source at full
-        # volume and the banner jingle very quiet underneath it. Only when the source is silent
-        # does the banner carry the sound on its own, at a normal level.
-        ad_vol = 0.12 if src_has_audio else 0.85
         prev = "[base]"
         ad_audio: list[str] = []
         # Each banner is a fresh input so the same file can be overlaid at several times.
@@ -105,11 +101,20 @@ def render_clip(
             prev = outlabel
             if ad_has_audio:
                 delay = int(t0 * 1000)
-                chains.append(f"[{idx}:a]volume={ad_vol},adelay={delay}|{delay}[ba{i}]")
+                # The banner plays at full volume so its own sound is heard clearly while it is on.
+                chains.append(f"[{idx}:a]adelay={delay}|{delay}[ba{i}]")
                 ad_audio.append(f"[ba{i}]")
         video = prev
         if ad_audio:
-            parts = (["[0:a]", *ad_audio] if src_has_audio else ad_audio)
+            if src_has_audio:
+                # While a banner is on screen the clip's own sound DUCKS right down so the banner
+                # is heard; the rest of the time the clip plays at full volume.
+                windows = "+".join(f"between(t,{t:.3f},{t + info.duration:.3f})" for t in times)
+                chains.append(f"[0:a]volume=0.2:enable='{windows}'[sa]")
+                parts = ["[sa]", *ad_audio]
+            else:
+                # Source clip has no sound at all — the banners carry it.
+                parts = ad_audio
             if len(parts) == 1:
                 chains.append(f"{parts[0]}alimiter=limit=0.95[aout]")
             else:
