@@ -241,6 +241,8 @@ async def _enqueue(call: CallbackQuery, job: Job) -> None:
     if job.limit:
         text += f"\n✂️ Беру первые {_fmt(job.limit)}"
     text += "\n\n✅ Принято!"
+    if job.ad == "natriavpn":
+        text += "\n\n📝 Не забудь в описании ролика хэштег #natriavpn (правило 2.9)."
     if ahead:
         text += f"\n⏳ Видео в очереди: сначала закончу предыдущие ({ahead})."
     await call.message.edit_text(text)

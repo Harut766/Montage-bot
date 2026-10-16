@@ -4,7 +4,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from .ads import Ad, ad_start
+from .ads import Ad
 from .subtitles import OUT_H, OUT_W, Layout
 
 
@@ -55,14 +55,16 @@ def render_clip(
 ) -> None:
     """Blurred copy of the frame as a 9:16 background, the original on top, subtitles burned in.
 
-    With `ad`, it is laid EDGE TO EDGE (full screen width, no side crop), centred, in the middle of
-    the clip, covering ~30% of the screen (contest rule 3.2). A chromakey background is removed only
-    when the ad defines one. The clip keeps its own audio at full volume so the voice-over stays
-    clearly audible (rule 2.3); the banner's own audio is mixed in softly during its window, and it
-    carries the sound on its own when the source clip has none — so the result is never silent.
-    The ASS file is referenced by a bare name relative to its directory to avoid filter-escaping issues.
+    With `ad`, banners are laid EDGE TO EDGE (full screen width, no side crop), centred, covering
+    ~30% of the screen (contest rule 3.2). A short clip gets one banner in the middle; a clip from
+    2:00 gets one in the middle of each full minute (rules 3.3–3.4). A chromakey background is
+    removed only when the ad defines one. The clip keeps its own audio at full volume so the
+    voice-over stays clearly audible (rule 2.3); each banner's own audio is mixed in softly during
+    its window, and the banners carry the sound on their own when the source clip has none — so the
+    result is never silent. The ASS file is referenced by a bare name relative to its directory to
+    avoid filter-escaping issues.
     """
-    from .ads import full_width_size
+    from .ads import banner_times, full_width_size
 
     duration = end - start
     inputs = ["-ss", f"{start:.3f}", "-t", f"{duration:.3f}", "-i", str(src.resolve())]
@@ -76,29 +78,44 @@ def render_clip(
     video = "[base]"
     audio_map = ["-map", "0:a?"]
     if ad:
-        inputs += ["-i", str(ad.file.resolve())]
         info = probe(ad.file)
-        t0 = ad_start(duration, info.duration)
+        times = banner_times(duration, info.duration)
         aw, ah = full_width_size(info.width, info.height)
         key = f"colorkey={ad.key_color}:{ad.similarity}:{ad.blend},despill=type=blue," if ad.key_color else ""
-        chains += [
-            f"[1:v]{key}scale={aw}:{ah},setsar=1,setpts=PTS-STARTPTS+{t0:.3f}/TB[ad]",
-            "[base][ad]overlay=(W-w)/2:(H-h)/2:eof_action=pass[withad]",
-        ]
-        video = "[withad]"
-        if has_audio(ad.file):
-            delay = int(t0 * 1000)
-            ad_end = t0 + info.duration
+        ad_has_audio = has_audio(ad.file)
+        prev = "[base]"
+        ad_audio: list[str] = []
+        # Each banner is a fresh input so the same file can be overlaid at several times.
+        for i, t0 in enumerate(times):
+            idx = i + 1  # input 0 is the source
+            inputs += ["-i", str(ad.file.resolve())]
+            vlabel, outlabel = f"[ad{i}]", f"[v{i}]"
+            chains.append(
+                f"[{idx}:v]{key}scale={aw}:{ah},setsar=1,setpts=PTS-STARTPTS+{t0:.3f}/TB{vlabel}"
+            )
+            chains.append(f"{prev}{vlabel}overlay=(W-w)/2:(H-h)/2:eof_action=pass{outlabel}")
+            prev = outlabel
+            if ad_has_audio:
+                delay = int(t0 * 1000)
+                chains.append(f"[{idx}:a]volume=0.4,adelay={delay}|{delay}[ba{i}]")
+                ad_audio.append(f"[ba{i}]")
+        video = prev
+        if ad_audio:
+            windows = "+".join(f"between(t,{t:.3f},{t + info.duration:.3f})" for t in times)
             if has_audio(src):
-                # Voice stays near full volume; the banner's audio is mixed in softly in its window.
-                chains += [
-                    f"[0:a]volume=0.8:enable='between(t,{t0:.3f},{ad_end:.3f})'[sa]",
-                    f"[1:a]volume=0.4,adelay={delay}|{delay}[ba]",
-                    "[sa][ba]amix=inputs=2:duration=first:normalize=0,alimiter=limit=0.95[aout]",
-                ]
+                # Voice stays near full volume; each banner's audio is mixed in softly in its window.
+                chains.append(f"[0:a]volume=0.8:enable='{windows}'[sa]")
+                parts = ["[sa]", *ad_audio]
             else:
-                # Source clip has no sound at all — carry the banner's audio so it is never silent.
-                chains.append(f"[1:a]adelay={delay}|{delay}[aout]")
+                # Source clip has no sound at all — carry the banners' audio so it is never silent.
+                parts = ad_audio
+            if len(parts) == 1:
+                chains.append(f"{parts[0]}alimiter=limit=0.95[aout]")
+            else:
+                chains.append(
+                    f"{''.join(parts)}amix=inputs={len(parts)}:duration=first:normalize=0,"
+                    "alimiter=limit=0.95[aout]"
+                )
             audio_map = ["-map", "[aout]"]
     chains.append(f"{video}ass={ass_file.name}:fontsdir={fonts_dir.resolve()},fps=30,format=yuv420p[v]")
     _run([

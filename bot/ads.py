@@ -1,4 +1,4 @@
-"""Ad inserts placed full-width, centred, on every rendered clip (BUBA VPN contest rules 3.1–3.4)."""
+"""Ad banners placed full-width, centred, on every rendered clip (VPN clipping contest rules 3.1–3.4)."""
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -6,7 +6,7 @@ from .subtitles import OUT_H, OUT_W
 
 ADS_DIR = Path(__file__).resolve().parent.parent / "ads"
 
-# Rule 3.2: the ad must cover at least 25% of the screen. Aim well above the floor — the BUBA
+# Rule 3.2: the banner must cover at least 25% of the screen. Aim well above the floor — the
 # checker rounds/estimates and warns when the area is "близко к границе", so 30% leaves room.
 MIN_AREA = 0.25
 TARGET_AREA = 0.30
@@ -26,13 +26,33 @@ class Ad:
 
 ADS = {
     # Solid full-frame design — no chromakey, laid edge to edge.
-    "bubavpn": Ad("🟦 BubaVPN", ADS_DIR / "bubavpn.webm"),
+    # NATRIA VPN clipping programme (replaces the closed BubaVPN contest).
+    "natriavpn": Ad("🟩 NATRIA VPN", ADS_DIR / "natriavpn.mp4"),
 }
 
 
 def ad_start(clip_duration: float, ad_duration: float) -> float:
-    """The ad plays centred in time: its middle falls on the middle of the clip."""
+    """The banner plays centred in time: its middle falls on the middle of the clip."""
     return max(0.0, (clip_duration - ad_duration) / 2)
+
+
+def banner_times(clip_duration: float, ad_duration: float) -> list[float]:
+    """Start offsets for every banner on a clip (NATRIA rules 3.3–3.4):
+
+    * a clip up to 2:00 — ONE banner exactly in the middle;
+    * a clip from 2:00 — one banner in the middle of each full minute (0:30, 1:30, 2:30 …),
+      i.e. an extra banner for every additional full minute.
+
+    Each start is clamped so the whole banner stays inside the clip."""
+    if clip_duration < 120:
+        return [ad_start(clip_duration, ad_duration)]
+    minutes = int(clip_duration // 60)
+    times: list[float] = []
+    for k in range(minutes):
+        centre = 30.0 + 60.0 * k  # middle of the k-th minute
+        t0 = centre - ad_duration / 2
+        times.append(max(0.0, min(t0, clip_duration - ad_duration)))
+    return times
 
 
 def full_width_size(bw: int, bh: int) -> tuple[int, int]:

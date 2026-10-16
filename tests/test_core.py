@@ -215,6 +215,30 @@ def test_live_part_vertical_louder_with_background(tmp_path, with_bg):
     assert 1.8 < _mean_db(out) - _mean_db(src) < 2.8
 
 
+def test_banner_times_one_in_the_middle_short_clip():
+    from bot.ads import ad_start, banner_times
+
+    # Up to 2:00 → one banner exactly in the middle (rule 3.4).
+    assert banner_times(60, 7.2) == [ad_start(60, 7.2)]
+    assert banner_times(119, 7.2) == [ad_start(119, 7.2)]
+    # Its centre is the clip's centre.
+    (t,) = banner_times(100, 7.2)
+    assert abs((t + 7.2 / 2) - 50) < 0.01
+
+
+def test_banner_times_one_per_minute_for_long_clip():
+    from bot.ads import banner_times
+
+    # From 2:00 → one banner in the middle of each full minute (rules 3.3–3.4): 0:30, 1:30, …
+    centres = lambda d: [round(t + 7.2 / 2) for t in banner_times(d, 7.2)]
+    assert centres(120) == [30, 90]
+    assert centres(180) == [30, 90, 150]
+    assert centres(300) == [30, 90, 150, 210, 270]
+    # Every banner stays fully inside the clip.
+    for t in banner_times(185, 7.2):
+        assert 0 <= t and t + 7.2 <= 185
+
+
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
 def test_render_with_ad_full_width(tmp_path: Path):
     src = tmp_path / "src.mp4"
@@ -226,7 +250,26 @@ def test_render_with_ad_full_width(tmp_path: Path):
     ass = tmp_path / "p.ass"
     ass.write_text(build_ass([], 0, 8, layout, 1, "ru", True), encoding="utf-8")
     out = tmp_path / "out.mp4"
-    render_clip(src, 0, 8, ass, layout, FONTS, out, ADS["bubavpn"])
+    render_clip(src, 0, 8, ass, layout, FONTS, out, ADS["natriavpn"])
     res = probe(out)
     assert (res.width, res.height) == (1080, 1920)
     assert abs(res.duration - 8) < 0.3
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
+def test_render_long_clip_has_two_banners(tmp_path: Path):
+    # A clip ≥2:00 gets two banners (0:30 and 1:30); render must succeed end to end.
+    src = tmp_path / "src.mp4"
+    subprocess.run([
+        "ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "color=c=green:s=640x360:r=30:d=130",
+        "-f", "lavfi", "-i", "sine=f=440:d=130", "-shortest", "-c:v", "libx264",
+        "-preset", "ultrafast", "-c:a", "aac", str(src),
+    ], check=True)
+    layout = make_layout(640, 360)
+    ass = tmp_path / "p.ass"
+    ass.write_text(build_ass([], 0, 130, layout, 1, "ru", True), encoding="utf-8")
+    out = tmp_path / "out.mp4"
+    render_clip(src, 0, 130, ass, layout, FONTS, out, ADS["natriavpn"])
+    res = probe(out)
+    assert (res.width, res.height) == (1080, 1920)
+    assert abs(res.duration - 130) < 0.5
