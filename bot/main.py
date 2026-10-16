@@ -581,7 +581,12 @@ async def main() -> None:
     cfg.work_dir.mkdir(parents=True, exist_ok=True)
     session = None
     if cfg.telegram_api_url:
-        session = AiohttpSession(api=TelegramAPIServer.from_base(cfg.telegram_api_url, is_local=True))
+        # Big uploads can take the local Bot API server a while to ingest; the default 60s request
+        # timeout then fails get_file with «Request timeout error». Give every call room.
+        session = AiohttpSession(
+            api=TelegramAPIServer.from_base(cfg.telegram_api_url, is_local=True),
+            timeout=UPLOAD_TIMEOUT,
+        )
     bot = Bot(cfg.bot_token, session=session, default=DefaultBotProperties(parse_mode="HTML"))
     dp = Dispatcher()
     # Same whitelist as the video flow; outfit is included first so its photo handler intercepts
