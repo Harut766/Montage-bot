@@ -45,8 +45,9 @@ async def run(
     info = await asyncio.to_thread(probe, src)
     layout = make_layout(info.width, info.height)
 
-    if mode == "cut":
-        # No speech-to-text, no subtitles — just fixed parts with a "Часть N" label.
+    if mode in ("cut", "plain"):
+        # No speech-to-text, no subtitles. "cut" adds a "Часть N" label; "plain" adds nothing
+        # (clean vertical clips for clipping campaigns that want no on-video text).
         segments: list[Segment] = []
         clips = split_by_time(info.duration, target)
         label_lang = "ru"
@@ -71,7 +72,7 @@ async def run(
             clips = split_evenly(segments, info.duration, target)
 
     total = len(clips)
-    show_label = mode != "full"
+    show_label = mode not in ("full", "plain")
     for n, clip in enumerate(clips, start=1):
         if is_cancelled():
             raise Cancelled

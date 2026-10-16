@@ -54,6 +54,7 @@ MODES = {
     "clips": "✂️ Нарезать на части с субтитрами",
     "full": "📝 Только субтитры, не резать",
     "cut": "✂️ Просто нарезать, без субтитров",
+    "plain": "🎮 Короткие клипы без текста (для клиппинга)",
     "youtube": "📺 Видео для YouTube: части по 10/15/20 мин, фон, громче",
 }
 
@@ -327,9 +328,9 @@ async def on_mode(call: CallbackQuery) -> None:
         await call.answer("Сначала пришли видео", show_alert=True)
         return
     job.mode = call.data.split(":")[1]
-    if job.mode == "cut":
+    if job.mode in ("cut", "plain"):
         job.language = "cut"
-        await _ask_length(call.message)  # cut needs only length
+        await _ask_length(call.message)  # cut/plain need only length, no transcription
     elif job.mode == "full":
         await _ask_language(call.message)  # full video needs only language
     else:
@@ -344,7 +345,7 @@ async def on_length(call: CallbackQuery) -> None:
         await call.answer("Сначала пришли видео", show_alert=True)
         return
     job.target = int(call.data.split(":")[1])
-    if job.mode == "cut":
+    if job.mode in ("cut", "plain"):
         await _enqueue(call, job)  # no subtitles, nothing more to ask
     else:
         await _ask_language(call.message)
