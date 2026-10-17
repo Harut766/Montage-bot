@@ -22,6 +22,7 @@ from aiogram.types import (
     Message,
 )
 
+from . import montage as montage_mod
 from . import outfit, pipeline
 from .ads import ADS
 from .cleanup import sweep_tg_storage
@@ -48,6 +49,9 @@ BG_SECONDS = 180  # a background loops under each part, a few minutes of footage
 LIVE_CAPS = (("Всё видео", 0), ("30 мин", 1800), ("1 час", 3600), ("1.5 часа", 5400), ("2 часа", 7200))
 # Chats that pressed «📺 Видео для YouTube» and are now expected to send a link or a file.
 youtube_chats: set[int] = set()
+# Chats that pressed «🎞 Смонтировать клипы» → the file_ids of the clips they are sending.
+montage_sessions: dict[int, list[str]] = {}
+MONTAGE_MAX_CLIPS = 6
 
 
 MODES = {
@@ -56,6 +60,7 @@ MODES = {
     "cut": "✂️ Просто нарезать, без субтитров",
     "plain": "🎮 Короткие клипы без текста (для клиппинга)",
     "youtube": "📺 Видео для YouTube: части по 10/15/20 мин, фон, громче",
+    "montage": "🎞 Монтаж из нескольких клипов",
 }
 
 
@@ -70,6 +75,9 @@ class Job:
     ad: str | None = None
     # YouTube mode: process only the first `limit` seconds of a long live (None = the whole video).
     limit: int | None = None
+    # Montage mode: the clips to combine, and how many different montages to return.
+    file_ids: list[str] | None = None
+    count: int | None = None
     cancelled: bool = False
 
 
@@ -129,10 +137,13 @@ async def start(message: Message) -> None:
         "🎬 <b>Видео в ролики</b> — нарежу длинное видео на вертикальные клипы для TikTok "
         "(субтитры, реклама, «Часть N»).\n"
         "👕 <b>Собрать Outfit</b> — соберу flatlay-лук из фото вещей на выбранном фоне.\n"
-        "📺 <b>Видео для YouTube</b> — порежу лайв на части по 10/15/20 мин, сверху и снизу фон, звук громче.\n",
+        "📺 <b>Видео для YouTube</b> — порежу лайв на части по 10/15/20 мин, сверху и снизу фон, звук громче.\n"
+        "🎞 <b>Монтаж из клипов</b> — пришли 2–6 клипов, соберу из них несколько вертикальных "
+        "монтажей с быстрыми склейками (у каждого свой порядок кадров).\n",
         reply_markup=_kb([
             [("🎬 Видео в ролики", "app:video"), ("👕 Собрать Outfit", "app:outfit")],
             [("📺 Видео для YouTube", "app:youtube")],
+            [("🎞 Монтаж из клипов", "app:montage")],
         ]),
     )
 
@@ -142,6 +153,7 @@ async def on_app(call: CallbackQuery) -> None:
     choice = call.data.split(":")[1]
     pending.pop(call.message.chat.id, None)
     youtube_chats.discard(call.message.chat.id)
+    montage_sessions.pop(call.message.chat.id, None)
     if choice == "video":
         outfit.cancel_session(call.message.chat.id)
         await call.message.edit_text(
@@ -154,6 +166,14 @@ async def on_app(call: CallbackQuery) -> None:
             "📺 Пришли ссылку на видео (Facebook, YouTube…) или видео файлом.\n"
             "Фоны: /backgrounds\n/cancel — отменить."
         )
+    elif choice == "montage":
+        outfit.cancel_session(call.message.chat.id)
+        montage_sessions[call.message.chat.id] = []
+        await call.message.edit_text(
+            "🎞 Пришли <b>2–6 вертикальных клипов</b> по очереди (каждый отдельным видео).\n"
+            "Когда закончишь — нажми «Готово».\n/cancel — отменить.",
+            reply_markup=_kb([[("✅ Готово", "montgo")]]),
+        )
     else:
         await call.message.edit_text("👕 Собираем лук!")
         await outfit.start_session(call.message)
@@ -164,6 +184,7 @@ async def on_app(call: CallbackQuery) -> None:
 async def cancel(message: Message) -> None:
     pending.pop(message.chat.id, None)
     youtube_chats.discard(message.chat.id)
+    montage_sessions.pop(message.chat.id, None)
     outfit_cancelled = outfit.cancel_session(message.chat.id)
     jobs = [j for j in [current, *waiting] if j and j.chat_id == message.chat.id and not j.cancelled]
     for j in jobs:
@@ -177,8 +198,8 @@ async def cancel(message: Message) -> None:
 
 
 def _mode_kb(job: Job) -> InlineKeyboardMarkup:
-    # «youtube» is its own top-level button, not part of the video-mode menu.
-    rows = [[(title, f"mode:{code}")] for code, title in MODES.items() if code != "youtube"]
+    # «youtube» and «montage» are their own top-level buttons, not part of the video-mode menu.
+    rows = [[(title, f"mode:{code}")] for code, title in MODES.items() if code not in ("youtube", "montage")]
     # Ad toggles sit under the modes: tap to switch on/off, then pick a mode.
     for code, ad in ADS.items():
         mark = "✅" if job.ad == code else "⬜️"
@@ -236,6 +257,8 @@ async def _enqueue(call: CallbackQuery, job: Job) -> None:
     waiting.append(job)
     await queue.put(job)
     text = f"{MODES[job.mode]}"
+    if job.mode == "montage":
+        text += f"\n🎬 Монтажей: {job.count} по ~{job.target} сек из {len(job.file_ids)} клипов"
     if job.ad:
         text += f"\n📢 Реклама: {ADS[job.ad].title}"
     if job.limit:
@@ -301,6 +324,17 @@ async def on_background_url(message: Message) -> None:
 @router.message(F.video | F.document.mime_type.startswith("video/"))
 async def on_video(message: Message) -> None:
     media = message.video or message.document
+    if message.chat.id in montage_sessions:
+        clips = montage_sessions[message.chat.id]
+        if len(clips) >= MONTAGE_MAX_CLIPS:
+            await message.answer(f"Уже {MONTAGE_MAX_CLIPS} клипов — максимум. Нажми «Готово».")
+            return
+        clips.append(media.file_id)
+        await message.answer(
+            f"✅ Клип {len(clips)} принят. Пришли ещё или нажми «Готово».",
+            reply_markup=_kb([[("✅ Готово", "montgo")]]),
+        )
+        return
     job = Job(chat_id=message.chat.id, file_id=media.file_id)
     if message.chat.id in youtube_chats:
         await _ask_youtube(message, job)
@@ -400,6 +434,47 @@ async def on_ad(call: CallbackQuery) -> None:
     await call.answer("Реклама включена" if job.ad else "Реклама выключена")
 
 
+@router.callback_query(F.data == "montgo")
+async def on_montage_go(call: CallbackQuery) -> None:
+    clips = montage_sessions.get(call.message.chat.id)
+    if not clips or len(clips) < 2:
+        await call.answer("Нужно минимум 2 клипа", show_alert=True)
+        return
+    montage_sessions.pop(call.message.chat.id, None)
+    job = Job(chat_id=call.message.chat.id, mode="montage", file_ids=list(clips))
+    pending[call.message.chat.id] = job
+    await call.message.edit_text(
+        f"🎞 Клипов: {len(clips)}. Сколько разных монтажей сделать?",
+        reply_markup=_kb([[(f"{c} шт", f"mcount:{c}") for c in montage_mod.COUNTS]]),
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("mcount:"))
+async def on_montage_count(call: CallbackQuery) -> None:
+    job = pending.get(call.message.chat.id)
+    if not job or job.mode != "montage":
+        await call.answer("Сначала собери клипы", show_alert=True)
+        return
+    job.count = int(call.data.split(":")[1])
+    await call.message.edit_text(
+        "⏱ Какой длины монтажи?",
+        reply_markup=_kb([[(f"{s} сек", f"mlen:{s}") for s in montage_mod.LENGTHS]]),
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("mlen:"))
+async def on_montage_len(call: CallbackQuery) -> None:
+    job = pending.get(call.message.chat.id)
+    if not job or job.mode != "montage" or not job.count:
+        await call.answer("Сначала собери клипы", show_alert=True)
+        return
+    job.target = int(call.data.split(":")[1])
+    await _enqueue(call, job)
+    await call.answer()
+
+
 # ---------- processing ----------
 
 async def fetch_source(bot: Bot, job: Job, work: Path) -> tuple[Path, bool]:
@@ -478,6 +553,9 @@ async def process(bot: Bot, job: Job) -> None:
     work.mkdir(parents=True)
     src, from_server = None, False
     try:
+        if job.mode == "montage":
+            await send_montage(bot, job, work, progress)
+            return
         try:
             src, from_server = await fetch_source(bot, job, work)
         except TelegramBadRequest as e:
@@ -523,6 +601,40 @@ async def process(bot: Bot, job: Job) -> None:
         shutil.rmtree(work, ignore_errors=True)
         if from_server and src:
             src.unlink(missing_ok=True)
+
+
+async def fetch_into(bot: Bot, file_id: str, work: Path, name: str) -> Path:
+    """Download one clip (by file_id) into the work dir — copied straight from the local Bot API
+    storage when available, otherwise over HTTP."""
+    file = await bot.get_file(file_id)
+    local = Path(file.file_path)
+    dst = work / f"{name}{Path(file.file_path).suffix or '.mp4'}"
+    if cfg.telegram_api_url and local.is_absolute() and local.exists():
+        await asyncio.to_thread(shutil.copyfile, local, dst)
+    else:
+        await bot.download_file(file.file_path, dst, timeout=UPLOAD_TIMEOUT)
+    return dst
+
+
+async def send_montage(bot: Bot, job: Job, work: Path, progress) -> None:
+    await progress("⬇️ Загружаю клипы…")
+    srcs = [await fetch_into(bot, fid, work, f"clip_{i}") for i, fid in enumerate(job.file_ids)]
+    durations = [(await asyncio.to_thread(pipeline.probe, s)).duration for s in srcs]
+    count = job.count or 3
+    for n in range(1, count + 1):
+        if job.cancelled:
+            raise pipeline.Cancelled
+        await progress(f"🎬 Монтирую ролик {n}/{count}… (быстрые склейки, пара минут на CPU)")
+        segments = montage_mod.montage_segments(durations, job.target, seed=random.randrange(1_000_000))
+        out = work / f"montage_{n}.mp4"
+        await asyncio.to_thread(montage_mod.render_montage, srcs, segments, out)
+        await send_video_retry(
+            bot, job.chat_id, out,
+            caption=f"🎞 Монтаж {n}/{count} · ~{job.target} сек",
+            width=1080, height=1920, duration=job.target, supports_streaming=True,
+        )
+        out.unlink(missing_ok=True)
+    await progress(f"✅ Готово! Монтажей: {count}")
 
 
 async def send_live(bot: Bot, job: Job, src: Path, work: Path, progress) -> None:

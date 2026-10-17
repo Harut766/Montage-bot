@@ -148,6 +148,41 @@ def test_outfit_compose_geometry(monkeypatch):
     assert set(outfit.CATEGORIES) == set(outfit.LAYOUT) == set(outfit.DRAW_ORDER)
 
 
+def test_montage_segments_fill_and_vary():
+    from bot.montage import MAX_SEG, MIN_SEG, montage_segments
+
+    durs = [9.0, 9.0, 9.0]
+    segs = montage_segments(durs, 15, seed=1)
+    # Fills at least the target, every shot within its clip and within the cut-length bounds.
+    assert sum(s[2] for s in segs) >= 15
+    for i, start, dur in segs:
+        assert 0 <= i < len(durs)
+        assert MIN_SEG - 0.01 <= dur <= MAX_SEG + 0.01
+        assert start >= 0 and start + dur <= durs[i] + 0.01
+    # No clip used twice in a row; different seeds give different arrangements.
+    assert all(a[0] != b[0] for a, b in zip(segs, segs[1:]))
+    assert montage_segments(durs, 15, seed=2) != segs
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
+def test_render_montage_mixed_orientation(tmp_path: Path):
+    from bot.montage import montage_segments, render_montage
+
+    c1, c2 = tmp_path / "c1.mp4", tmp_path / "c2.mp4"
+    subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "testsrc2=s=1920x1080:r=30:d=8",
+                    "-f", "lavfi", "-i", "sine=f=300:d=8", "-shortest", "-c:v", "libx264", "-c:a", "aac", str(c1)],
+                   check=True)
+    subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "testsrc2=s=720x1280:r=30:d=8",
+                    "-f", "lavfi", "-i", "sine=f=500:d=8", "-shortest", "-c:v", "libx264", "-c:a", "aac", str(c2)],
+                   check=True)
+    segs = montage_segments([probe(c1).duration, probe(c2).duration], 10, seed=7)
+    out = tmp_path / "m.mp4"
+    render_montage([c1, c2], segs, out)
+    r = probe(out)
+    assert (r.width, r.height) == (1080, 1920)
+    assert r.duration >= 10
+
+
 def test_pick_percent_range():
     from bot.live import MAX_PERCENT, MIN_PERCENT, pick_percent
 
