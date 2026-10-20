@@ -25,11 +25,16 @@ services:
     env_file: .env
     environment:
       TELEGRAM_API_URL: http://telegram-bot-api:8081
+      # yt-dlp reads cookies from here; drop cookies.txt into ./cookies on the host.
+      COOKIES_FILE: /cookies/cookies.txt
     volumes:
       # Same path as in telegram-bot-api: uploaded videos are read directly from its storage.
       - tg-api-data:/var/lib/telegram-bot-api
       - work:/data
       - whisper-models:/root/.cache/huggingface
+      # Host folder for cookies.txt (YouTube + Facebook sign-in for yt-dlp). A folder, not a single
+      # file, so the bot still starts when no cookies are present yet.
+      - ./cookies:/cookies:ro
     depends_on:
       - telegram-bot-api
 

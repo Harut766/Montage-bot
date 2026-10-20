@@ -3,3 +3,6 @@ __pycache__/
 .env
 data/
 .pytest_cache/
+
+# cookies (never commit real cookies)
+cookies/cookies.txt
