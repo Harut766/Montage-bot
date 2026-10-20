@@ -192,15 +192,16 @@ def test_pick_percent_range():
 
 
 def test_live_fg_size_always_leaves_background():
-    from bot.live import MAX_FG_FRAC, live_fg_size
-    from bot.subtitles import OUT_H, OUT_W
+    from bot.live import FRAME_H, FRAME_W, MAX_FG_FRAC, live_fg_size
 
-    # A vertical reel must NOT fill the whole height, so the background stays visible.
+    # YouTube mode is horizontal 16:9. A vertical clip becomes a tall centred strip — full height,
+    # narrow width, so the background shows on the sides.
     w, h = live_fg_size(720, 1280)
-    assert h <= int(MAX_FG_FRAC * OUT_H) and h < OUT_H
-    assert w <= OUT_W
-    # A horizontal source scales to full width with big bands, unchanged.
-    assert live_fg_size(1920, 1080) == (OUT_W, 608)
+    assert h == FRAME_H
+    assert w < FRAME_W
+    # A wide source is held off the edges so the side background still shows.
+    w2, _ = live_fg_size(1920, 1080)
+    assert w2 <= int(MAX_FG_FRAC * FRAME_W) and w2 < FRAME_W
 
 
 def test_capped_duration_limits_long_lives():
@@ -244,7 +245,7 @@ def test_live_part_vertical_louder_with_background(tmp_path, with_bg):
     out = tmp_path / "out.mp4"
     render_live_part(src, 1.0, 5.0, 640, 360, bgs[0] if bgs else None, 130, True, out)
     info = probe(out)
-    assert (info.width, info.height) == (1080, 1920)
+    assert (info.width, info.height) == (1920, 1080)
     assert abs(info.duration - 4.0) < 0.2
     # +30% amplitude is about +2.3 dB.
     assert 1.8 < _mean_db(out) - _mean_db(src) < 2.8

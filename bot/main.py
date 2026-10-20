@@ -137,7 +137,7 @@ async def start(message: Message) -> None:
         "🎬 <b>Видео в ролики</b> — нарежу длинное видео на вертикальные клипы для TikTok "
         "(субтитры, реклама, «Часть N»).\n"
         "👕 <b>Собрать Outfit</b> — соберу flatlay-лук из фото вещей на выбранном фоне.\n"
-        "📺 <b>Видео для YouTube</b> — порежу лайв на части по 10/15/20 мин, сверху и снизу фон, звук громче.\n"
+        "📺 <b>Видео для YouTube</b> — горизонт 16:9, видео по центру, по бокам фон; части по 10/15/20 мин, звук громче.\n"
         "🎞 <b>Монтаж из клипов</b> — пришли 2–6 клипов, соберу из них несколько вертикальных "
         "монтажей с быстрыми склейками (у каждого свой порядок кадров).\n",
         reply_markup=_kb([
@@ -274,7 +274,7 @@ async def _enqueue(call: CallbackQuery, job: Job) -> None:
 @router.message(Command("backgrounds"))
 async def list_backgrounds(message: Message) -> None:
     bgs = find_backgrounds(cfg.backgrounds_dir)
-    text = f"🔥 Фонов загружено: {len(bgs)}\n" if bgs else "Фонов пока нет — сверху и снизу будет размытое видео.\n"
+    text = f"🔥 Фонов загружено: {len(bgs)}\n" if bgs else "Фонов пока нет — по бокам будет размытое видео.\n"
     text += (
         "Добавить: пришли видео (костёр, листья…) с подписью «фон»\n"
         "или напиши «фон <ссылка>» — скачаю первые 3 минуты.\n"
@@ -643,14 +643,14 @@ async def send_live(bot: Bot, job: Job, src: Path, work: Path, progress) -> None
     audio = await asyncio.to_thread(has_audio, src)
     backgrounds = find_backgrounds(cfg.backgrounds_dir)
     if not backgrounds:
-        await progress("⚠️ Фонов нет — сверху и снизу будет размытое видео. Добавить: видео с подписью «фон» или «фон ссылка».")
+        await progress("⚠️ Фонов нет — по бокам будет размытое видео. Добавить: видео с подписью «фон» или «фон ссылка».")
     total = len(clips)
     for n, clip in enumerate(clips, start=1):
         if job.cancelled:
             raise pipeline.Cancelled
         percent = pick_percent()
-        # One 1080x1920 part takes a few minutes on CPU, so say it is not stuck.
-        await progress(f"🎬 Рендерю часть {n}/{total}… (1080×1920 на CPU — пара минут на часть, не завис)")
+        # One 1920x1080 part takes a few minutes on CPU, so say it is not stuck.
+        await progress(f"🎬 Рендерю часть {n}/{total}… (1920×1080 на CPU — пара минут на часть, не завис)")
         out = work / f"live_{n:02d}.mp4"
         bg = random.choice(backgrounds) if backgrounds else None
         await asyncio.to_thread(
@@ -660,7 +660,7 @@ async def send_live(bot: Bot, job: Job, src: Path, work: Path, progress) -> None
         if audio:
             caption += f" · 🔊 {percent}%"
         await send_video_retry(
-            bot, job.chat_id, out, caption=caption, width=1080, height=1920,
+            bot, job.chat_id, out, caption=caption, width=1920, height=1080,
             duration=int(clip.duration), supports_streaming=True,
         )
         out.unlink(missing_ok=True)
