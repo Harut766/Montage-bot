@@ -554,6 +554,12 @@ def download_url(url: str, work: Path, cookies_file: Path, max_seconds: int | No
         "merge_output_format": "mp4",
         "quiet": True,
         "noplaylist": True,
+        # Facebook (and some CDNs) cut long connections mid-stream — «X bytes read, Y more expected».
+        # Downloading in 10 MB ranged chunks and retrying heals those interrupted transfers.
+        "http_chunk_size": 10 * 1024 * 1024,
+        "retries": 10,
+        "fragment_retries": 10,
+        "continuedl": True,
     }
     # Lets YouTube links that demand "sign in to confirm you're not a bot" download as a logged-in user.
     if cookies_file.is_file():
