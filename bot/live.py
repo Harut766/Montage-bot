@@ -52,6 +52,11 @@ def find_backgrounds(folder: Path) -> list[Path]:
     return sorted(p for p in folder.iterdir() if p.is_file() and p.suffix.lower() in BG_EXTS)
 
 
+def extract_thumb(video: Path, out: Path) -> None:
+    """A small preview frame so the user can see what each background looks like before picking."""
+    _run(["ffmpeg", "-y", "-ss", "0.5", "-i", str(video), "-frames:v", "1", "-vf", "scale=480:-2", str(out)])
+
+
 def render_live_part(
     src: Path,
     start: float,

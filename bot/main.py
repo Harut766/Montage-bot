@@ -28,7 +28,15 @@ from .ads import ADS
 from .cleanup import sweep_tg_storage
 from .clips import split_by_time
 from .config import Config
-from .live import LIVE_LENGTHS, capped_duration, find_backgrounds, has_audio, pick_percent, render_live_part
+from .live import (
+    LIVE_LENGTHS,
+    capped_duration,
+    extract_thumb,
+    find_backgrounds,
+    has_audio,
+    pick_percent,
+    render_live_part,
+)
 
 log = logging.getLogger(__name__)
 
@@ -78,6 +86,8 @@ class Job:
     # Montage mode: the clips to combine, and how many different montages to return.
     file_ids: list[str] | None = None
     count: int | None = None
+    # YouTube mode: the one background chosen for every part (None = blurred source).
+    background: str | None = None
     cancelled: bool = False
 
 
@@ -259,6 +269,8 @@ async def _enqueue(call: CallbackQuery, job: Job) -> None:
     text = f"{MODES[job.mode]}"
     if job.mode == "montage":
         text += f"\n🎬 Монтажей: {job.count} по ~{job.target} сек из {len(job.file_ids)} клипов"
+    if job.mode == "youtube":
+        text += "\n🖼 Фон: " + (Path(job.background).name if job.background else "размытие по бокам")
     if job.ad:
         text += f"\n📢 Реклама: {ADS[job.ad].title}"
     if job.limit:
@@ -418,6 +430,47 @@ async def on_live_cap(call: CallbackQuery) -> None:
         return
     sec = int(call.data.split(":")[1])
     job.limit = sec or None  # 0 = the whole video
+    await _ask_background(call, job)
+    await call.answer()
+
+
+async def _ask_background(call: CallbackQuery, job: Job) -> None:
+    """Show the saved backgrounds (one preview frame each) and let the user pick ONE for all parts."""
+    backgrounds = find_backgrounds(cfg.backgrounds_dir)
+    if not backgrounds:
+        await _enqueue(call, job)  # nothing to choose — the sides get a blurred copy of the video
+        return
+    await call.message.edit_text("🖼 Выбери фон — поставлю его на все части:")
+    tmp = cfg.work_dir / f"thumb_{uuid.uuid4().hex}"
+    tmp.mkdir(parents=True, exist_ok=True)
+    try:
+        for i, bg in enumerate(backgrounds):
+            thumb = tmp / f"{i}.jpg"
+            try:
+                await asyncio.to_thread(extract_thumb, bg, thumb)
+                await call.message.answer_photo(FSInputFile(thumb), caption=f"Фон {i + 1}")
+            except Exception:
+                await call.message.answer(f"Фон {i + 1}: {bg.name}")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    rows = [[(f"Фон {i + 1}", f"bgpick:{i}")] for i in range(len(backgrounds))]
+    rows.append([("🌫 Без фона (размытие по бокам)", "bgpick:blur")])
+    await call.message.answer("Какой фон поставить?", reply_markup=_kb(rows))
+
+
+@router.callback_query(F.data.startswith("bgpick:"))
+async def on_bg_pick(call: CallbackQuery) -> None:
+    job = pending.get(call.message.chat.id)
+    if not job or job.mode != "youtube":
+        await call.answer("Сначала пришли видео", show_alert=True)
+        return
+    val = call.data.split(":")[1]
+    if val == "blur":
+        job.background = None
+    else:
+        bgs = find_backgrounds(cfg.backgrounds_dir)
+        idx = int(val)
+        job.background = str(bgs[idx]) if 0 <= idx < len(bgs) else None
     await _enqueue(call, job)
     await call.answer()
 
@@ -641,9 +694,10 @@ async def send_live(bot: Bot, job: Job, src: Path, work: Path, progress) -> None
     info = await asyncio.to_thread(pipeline.probe, src)
     clips = split_by_time(capped_duration(info.duration, job.limit), job.target)
     audio = await asyncio.to_thread(has_audio, src)
-    backgrounds = find_backgrounds(cfg.backgrounds_dir)
-    if not backgrounds:
-        await progress("⚠️ Фонов нет — по бокам будет размытое видео. Добавить: видео с подписью «фон» или «фон ссылка».")
+    # The user picked one background (or blur) for the whole video, so every part uses the same one.
+    bg = Path(job.background) if job.background and Path(job.background).exists() else None
+    if bg is None:
+        await progress("⚠️ Без фона — по бокам будет размытое видео. Добавить фоны: видео с подписью «фон» или «фон ссылка».")
     total = len(clips)
     for n, clip in enumerate(clips, start=1):
         if job.cancelled:
@@ -652,7 +706,6 @@ async def send_live(bot: Bot, job: Job, src: Path, work: Path, progress) -> None
         # One 1920x1080 part takes a few minutes on CPU, so say it is not stuck.
         await progress(f"🎬 Рендерю часть {n}/{total}… (1920×1080 на CPU — пара минут на часть, не завис)")
         out = work / f"live_{n:02d}.mp4"
-        bg = random.choice(backgrounds) if backgrounds else None
         await asyncio.to_thread(
             render_live_part, src, clip.start, clip.end, info.width, info.height, bg, percent, audio, out
         )
