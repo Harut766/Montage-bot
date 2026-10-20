@@ -33,8 +33,9 @@ services:
       - work:/data
       - whisper-models:/root/.cache/huggingface
       # Host folder for cookies.txt (YouTube + Facebook sign-in for yt-dlp). A folder, not a single
-      # file, so the bot still starts when no cookies are present yet.
-      - ./cookies:/cookies:ro
+      # file, so the bot still starts when no cookies are present yet. Writable: yt-dlp saves the
+      # refreshed cookie jar back to this file after each download.
+      - ./cookies:/cookies
     depends_on:
       - telegram-bot-api
 
