@@ -14,21 +14,20 @@ LIVE_LENGTHS = (600, 900, 1200)
 MIN_PERCENT = 106
 MAX_PERCENT = 130
 BG_EXTS = (".mp4", ".mov", ".webm", ".mkv", ".gif")
-# The source never fills the whole width, so the background always shows on the left and right —
-# even for an already-horizontal source that would otherwise cover it.
-MAX_FG_FRAC = 0.76
+# The centred person fills this share of the width; the background shows on the sides. A vertical
+# source is zoomed to this width (its top/bottom cropped), so the person is big and the side bands
+# are narrow — the rest of the width is background.
+FG_W_FRAC = 0.55
+# When the zoom crops a vertical source, keep more of the top (head/face) than the bottom.
+CROP_TOP_BIAS = 0.3
 
 
 def live_fg_size(src_w: int, src_h: int) -> tuple[int, int]:
-    """Size of the centred source: full height, but capped in width so the side background stays
-    visible (a vertical clip becomes a tall strip in the middle; a wide clip is held off the edges)."""
-    h = FRAME_H
-    w = round(h * src_w / src_h)
-    max_w = int(MAX_FG_FRAC * FRAME_W)
-    if w > max_w:
-        w = max_w
-        h = round(w * src_h / src_w)
-    return max(2, w // 2 * 2), max(2, h // 2 * 2)
+    """Size of the centred source box: a fixed share of the width, full height. The source is
+    scaled to cover this box (keeping its aspect) and the overflow is cropped, so the person is
+    wide with narrow side bands."""
+    w = int(FG_W_FRAC * FRAME_W)
+    return max(2, w // 2 * 2), FRAME_H
 
 
 def pick_percent() -> int:
@@ -73,7 +72,13 @@ def render_live_part(
     fg_w, fg_h = live_fg_size(src_w, src_h)
     dur = end - start
     inputs = ["-ss", f"{start:.3f}", "-t", f"{dur:.3f}", "-i", str(src)]
-    fg = f"[0:v]scale={fg_w}:{fg_h},setsar=1[fg]"
+    # Fill the centre box without distortion: scale to cover it, then crop the overflow (biased to
+    # keep the top, so a talking head's face stays in frame).
+    fg_scale = (
+        f"scale={fg_w}:{fg_h}:force_original_aspect_ratio=increase,"
+        f"crop={fg_w}:{fg_h}:(iw-ow)/2:(ih-oh)*{CROP_TOP_BIAS},setsar=1"
+    )
+    fg = f"[0:v]{fg_scale}[fg]"
     if background:
         inputs += ["-stream_loop", "-1", "-i", str(background)]
         bg = (
@@ -86,7 +91,7 @@ def render_live_part(
             "[0:v]split=2[a][b];"
             "[a]scale=480:270:force_original_aspect_ratio=increase,crop=480:270,"
             f"gblur=sigma=10,eq=brightness=-0.08,scale={FRAME_W}:{FRAME_H},setsar=1[bg];"
-            f"[b]scale={fg_w}:{fg_h},setsar=1[fg];"
+            f"[b]{fg_scale}[fg];"
             "[bg][fg]overlay=(W-w)/2:(H-h)/2,fps=30,format=yuv420p[v]"
         )
     audio: list[str] = []

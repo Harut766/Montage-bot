@@ -192,16 +192,15 @@ def test_pick_percent_range():
 
 
 def test_live_fg_size_always_leaves_background():
-    from bot.live import FRAME_H, FRAME_W, MAX_FG_FRAC, live_fg_size
+    from bot.live import FG_W_FRAC, FRAME_H, FRAME_W, live_fg_size
 
-    # YouTube mode is horizontal 16:9. A vertical clip becomes a tall centred strip — full height,
-    # narrow width, so the background shows on the sides.
-    w, h = live_fg_size(720, 1280)
-    assert h == FRAME_H
-    assert w < FRAME_W
-    # A wide source is held off the edges so the side background still shows.
-    w2, _ = live_fg_size(1920, 1080)
-    assert w2 <= int(MAX_FG_FRAC * FRAME_W) and w2 < FRAME_W
+    # YouTube mode is horizontal 16:9. The centred person fills a fixed share of the width (full
+    # height), so the background always shows on the sides — same box for any source.
+    for src in ((720, 1280), (1920, 1080), (1080, 1080)):
+        w, h = live_fg_size(*src)
+        assert h == FRAME_H
+        assert w == int(FG_W_FRAC * FRAME_W) // 2 * 2
+        assert w < FRAME_W  # side bands remain
 
 
 def test_capped_duration_limits_long_lives():
